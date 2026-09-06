@@ -183,6 +183,22 @@ test('a tampered session cookie is not a session', async () => {
   assert.match(res.headers.get('location'), /^\/login/);
 });
 
+test('a compose-mangled password hash is recognised as malformed', () => {
+  const auth = require('../src/auth');
+  const real = require('bcryptjs').hashSync('pw', 10);
+  assert.ok(auth.looksLikeBcryptHash(real));
+  assert.ok(auth.looksLikeBcryptHash('$2a$10$' + 'a'.repeat(53)));
+  assert.ok(auth.looksLikeBcryptHash('$2y$12$' + 'a'.repeat(53)));
+
+  // What docker compose leaves behind when the "$" are not doubled: it reads
+  // $2b and $12 as variable references and substitutes them away.
+  assert.equal(auth.looksLikeBcryptHash(real.replace(/\$2b|\$12|\$/g, '')), false);
+  for (const bad of ['', 'hunter2', '$2b$12$tooshort', real.slice(0, -1), real + 'x',
+    '$$2b$$12$$' + 'a'.repeat(53)]) {
+    assert.equal(auth.looksLikeBcryptHash(bad), false, JSON.stringify(bad));
+  }
+});
+
 test('the login redirect cannot be pointed off-site', async () => {
   const hostile = [
     '//evil.example/',

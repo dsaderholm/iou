@@ -5,17 +5,49 @@ services:
     container_name: iou
     restart: unless-stopped
 
-    # Copy .env.example to .env first. env_file passes values through verbatim,
-    # which matters: a bcrypt hash is full of "$" and would be eaten by compose
-    # variable substitution if it were referenced as ${ADMIN_PASSWORD_HASH}.
-    env_file:
-      - .env
-
     ports:
       - "3000:3000"
 
     volumes:
       - iou-data:/data
+
+    environment:
+      # ---- required -----------------------------------------------------
+      ADMIN_USER: "me"
+
+      # DOUBLE EVERY DOLLAR SIGN IN THE HASH.
+      #
+      # Compose treats a single "$" as the start of a variable, so a bcrypt
+      # hash pasted raw gets silently mangled and every login fails. Turn
+      #   $2b$12$abc...
+      # into
+      #   $$2b$$12$$abc...
+      # The app checks the hash at boot and refuses to start with a specific
+      # message if this was missed, so you will not be left guessing.
+      #
+      # Generate one with:
+      #   docker compose run --rm iou node scripts/hash-password.js 'your password'
+      ADMIN_PASSWORD_HASH: "$$2b$$12$$replace.this.with.your.own.hash.0000000000000000000"
+
+      # ---- optional -----------------------------------------------------
+      # Blank: a random secret is written to /data/session_secret on first run
+      # and reused. Set it to keep sessions alive across a wiped volume.
+      SESSION_SECRET: ""
+
+      # Payment buttons on the share page. Leave one blank, it does not appear.
+      VENMO_HANDLE: ""
+      PAYPAL_ME: ""
+      CASHAPP_HANDLE: ""
+
+      # Header title, and "you owe to <OWNER_NAME>" on the share page.
+      SITE_TITLE: "IOU"
+      OWNER_NAME: ""
+
+      # Set this to the address people actually use, e.g. https://iou.example.com
+      # Share links are built from it. Needed if your proxy rewrites Host.
+      PUBLIC_BASE_URL: ""
+
+      TZ: "America/Denver"
 
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/robots.txt').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]

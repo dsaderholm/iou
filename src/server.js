@@ -363,9 +363,24 @@ function start() {
   const problems = [];
   if (!config.adminUser) problems.push('ADMIN_USER is not set');
   if (!config.adminPasswordHash) problems.push('ADMIN_PASSWORD_HASH is not set');
+
   if (problems.length) {
     console.error('[iou] refusing to start: ' + problems.join(', '));
-    console.error('[iou] generate a hash with: npm run hash-password');
+    console.error("[iou] generate a hash with: npm run hash-password -- 'your password'");
+    process.exit(1);
+  }
+
+  // Fail loudly on a malformed hash rather than letting every login fail with
+  // no explanation. The overwhelmingly common cause is a hash pasted into a
+  // compose file without doubling its dollar signs, so name that directly.
+  if (!auth.looksLikeBcryptHash(config.adminPasswordHash)) {
+    console.error('[iou] refusing to start: ADMIN_PASSWORD_HASH is not a valid bcrypt hash.');
+    console.error(`[iou] got: ${JSON.stringify(config.adminPasswordHash)}`);
+    if (!config.adminPasswordHash.startsWith('$2')) {
+      console.error('[iou] it should start with "$2b$". If you put it straight into a');
+      console.error('[iou] compose file, docker compose ate the dollar signs: write them');
+      console.error('[iou] doubled, as $$2b$$12$$... , or move it into an env_file.');
+    }
     process.exit(1);
   }
 

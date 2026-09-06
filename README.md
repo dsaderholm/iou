@@ -15,18 +15,14 @@ Not bill splitting, not invoicing, not budgeting.
 
 ## Quick start
 
-```bash
-cp .env.example .env
-```
-
-Put a username and a password hash in `.env`:
+Generate a password hash:
 
 ```bash
 docker compose run --rm iou node scripts/hash-password.js 'your password'
 ```
 
-Paste the output as `ADMIN_PASSWORD_HASH`, keeping the single quotes around it.
-Then:
+Put it in `docker-compose.yml` as `ADMIN_PASSWORD_HASH`, **with every `$`
+doubled**, then:
 
 ```bash
 docker compose up -d --build
@@ -34,6 +30,33 @@ docker compose up -d --build
 
 It listens on port 3000 and keeps its database in the `iou-data` volume at
 `/data/iou.db`.
+
+### The one thing that will bite you
+
+Compose reads a single `$` as the start of a variable reference, and a bcrypt
+hash is full of them. A hash pasted raw into the `environment:` block arrives
+mangled, and the only symptom would be that the right password never works.
+
+So double them. Turn this:
+
+```
+$2b$12$K3nRz8Qm...
+```
+
+into this:
+
+```yaml
+ADMIN_PASSWORD_HASH: "$$2b$$12$$K3nRz8Qm..."
+```
+
+The app validates the hash at startup and refuses to boot with an explicit
+message if this was missed, so you get a clear error in the container log
+rather than a mysterious login failure.
+
+If you would rather keep secrets out of the compose file entirely, delete the
+`environment:` block, `cp .env.example .env`, and add `env_file: [.env]`
+instead. Values in an env file are passed through verbatim — no `$` doubling
+needed there.
 
 ### Without Docker
 
@@ -50,7 +73,7 @@ DATA_DIR=./data ADMIN_USER=me ADMIN_PASSWORD_HASH='...' npm start
 | Variable | Required | Default | What it does |
 | --- | --- | --- | --- |
 | `ADMIN_USER` | yes | — | The one login name. There is no registration route. |
-| `ADMIN_PASSWORD_HASH` | yes | — | bcrypt hash from `npm run hash-password`. Single-quote it in `.env`. |
+| `ADMIN_PASSWORD_HASH` | yes | — | bcrypt hash from `npm run hash-password`. Double every `$` if you put it in the compose file. Checked at startup. |
 | `SESSION_SECRET` | no | generated | Signs the session cookie. Left unset, a random secret is written to `/data/session_secret` on first run and reused. |
 | `VENMO_HANDLE` | no | — | Adds a Venmo button to the share page. Unset means no button. |
 | `PAYPAL_ME` | no | — | Adds a PayPal button. |

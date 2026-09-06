@@ -87,6 +87,19 @@ async function checkCredentials(username, password) {
   return userOk && passOk;
 }
 
+/**
+ * Whether a string is a well-formed bcrypt hash: "$2<variant>$<cost>$" then 53
+ * characters of salt and digest.
+ *
+ * Worth checking at boot because the usual way to get this wrong is invisible.
+ * Compose reads a single "$" as the start of a variable reference, so a hash
+ * pasted into a compose file without doubling the dollar signs arrives quietly
+ * mangled, and the only symptom is that the correct password stops working.
+ */
+function looksLikeBcryptHash(value) {
+  return /^\$2[abxy]?\$\d{2}\$[./A-Za-z0-9]{53}$/.test(String(value || ''));
+}
+
 function safeEqual(a, b) {
   const ba = Buffer.from(a, 'utf8');
   const bb = Buffer.from(b, 'utf8');
@@ -147,6 +160,7 @@ function requireAuth(req, res, next) {
 
 module.exports = {
   parseCookies,
+  looksLikeBcryptHash,
   makeToken,
   verifyToken,
   checkCredentials,
