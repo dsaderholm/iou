@@ -1,0 +1,85 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  image:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # QEMU so the arm64 variant can be built on an x86 runner.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=sha,format=short
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Prove the image actually runs and serves a request, rather than only
+      # that it built. Uses the ADMIN_PASSWORD path, same as a pasted stack.
+      - name: Smoke test the published image
+        run: |
+          docker run -d --name iou-smoke -p 3000:3000 \
+            -e ADMIN_USER=ci -e ADMIN_PASSWORD=ci-password \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/robots.txt >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          echo "--- robots.txt ---"
+          curl -fsS http://127.0.0.1:3000/robots.txt
+          echo "--- login page reachable ---"
+          curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3000/login
+          echo "--- bad share token is a 404 ---"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/t/nope)" = "404"
+          echo "--- container log ---"
+          docker logs iou-smoke
+          docker rm -f iou-smoke

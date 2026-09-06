@@ -1,7 +1,9 @@
+# Paste this straight into Dockhand (or run `docker compose up -d`).
+# Edit the two lines under "required" and you are done.
+
 services:
   iou:
-    build: .
-    image: iou
+    image: ghcr.io/dsaderholm/iou:latest
     container_name: iou
     restart: unless-stopped
 
@@ -14,27 +16,10 @@ services:
     environment:
       # ---- required -----------------------------------------------------
       ADMIN_USER: "me"
-
-      # DOUBLE EVERY DOLLAR SIGN IN THE HASH.
-      #
-      # Compose treats a single "$" as the start of a variable, so a bcrypt
-      # hash pasted raw gets silently mangled and every login fails. Turn
-      #   $2b$12$abc...
-      # into
-      #   $$2b$$12$$abc...
-      # The app checks the hash at boot and refuses to start with a specific
-      # message if this was missed, so you will not be left guessing.
-      #
-      # Generate one with:
-      #   docker compose run --rm iou node scripts/hash-password.js 'your password'
-      ADMIN_PASSWORD_HASH: "$$2b$$12$$replace.this.with.your.own.hash.0000000000000000000"
+      ADMIN_PASSWORD: "change-this-to-something-long"
 
       # ---- optional -----------------------------------------------------
-      # Blank: a random secret is written to /data/session_secret on first run
-      # and reused. Set it to keep sessions alive across a wiped volume.
-      SESSION_SECRET: ""
-
-      # Payment buttons on the share page. Leave one blank, it does not appear.
+      # Payment buttons on the share page. Blank means the button is absent.
       VENMO_HANDLE: ""
       PAYPAL_ME: ""
       CASHAPP_HANDLE: ""
@@ -43,11 +28,21 @@ services:
       SITE_TITLE: "IOU"
       OWNER_NAME: ""
 
-      # Set this to the address people actually use, e.g. https://iou.example.com
-      # Share links are built from it. Needed if your proxy rewrites Host.
+      # The address people actually open, e.g. https://iou.example.com
+      # Share links are built from it. Set this if a proxy rewrites Host.
       PUBLIC_BASE_URL: ""
 
       TZ: "America/Denver"
+
+      # Blank: a random session secret is written to /data on first run and
+      # reused. Set it to keep logins alive across a wiped volume.
+      SESSION_SECRET: ""
+
+      # Prefer not to keep the password in plaintext here? Generate a hash with
+      #   docker run --rm ghcr.io/dsaderholm/iou:latest node scripts/hash-password.js 'pw'
+      # then delete ADMIN_PASSWORD above and set this instead. Compose treats a
+      # lone "$" as a variable, so DOUBLE every one: $$2b$$12$$...
+      # ADMIN_PASSWORD_HASH: ""
 
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/robots.txt').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]

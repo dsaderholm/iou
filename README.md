@@ -15,48 +15,39 @@ Not bill splitting, not invoicing, not budgeting.
 
 ## Quick start
 
-Generate a password hash:
+Paste [`docker-compose.yml`](docker-compose.yml) into Dockhand (or run
+`docker compose up -d`), change these two lines, and deploy:
+
+```yaml
+ADMIN_USER: "me"
+ADMIN_PASSWORD: "change-this-to-something-long"
+```
+
+That is the whole setup. The image is prebuilt for amd64 and arm64 at
+`ghcr.io/dsaderholm/iou:latest`, so there is nothing to clone and no command to
+run first. It listens on 3000 and keeps its database in the `iou-data` volume
+at `/data/iou.db`.
+
+### If you would rather not keep a plaintext password in the compose file
+
+`ADMIN_PASSWORD` is hashed with bcrypt at startup and never stored in the
+clear — but it does sit in your compose file, which is the price of pasting and
+walking away. To avoid that, generate a hash:
 
 ```bash
-docker compose run --rm iou node scripts/hash-password.js 'your password'
+docker run --rm ghcr.io/dsaderholm/iou:latest node scripts/hash-password.js 'your password'
 ```
 
-Put it in `docker-compose.yml` as `ADMIN_PASSWORD_HASH`, **with every `$`
-doubled**, then:
-
-```bash
-docker compose up -d --build
-```
-
-It listens on port 3000 and keeps its database in the `iou-data` volume at
-`/data/iou.db`.
-
-### The one thing that will bite you
-
-Compose reads a single `$` as the start of a variable reference, and a bcrypt
-hash is full of them. A hash pasted raw into the `environment:` block arrives
-mangled, and the only symptom would be that the right password never works.
-
-So double them. Turn this:
-
-```
-$2b$12$K3nRz8Qm...
-```
-
-into this:
+Then drop `ADMIN_PASSWORD` and set `ADMIN_PASSWORD_HASH` instead. One catch:
+compose reads a lone `$` as a variable reference and a bcrypt hash is full of
+them, so **double every `$`**:
 
 ```yaml
 ADMIN_PASSWORD_HASH: "$$2b$$12$$K3nRz8Qm..."
 ```
 
-The app validates the hash at startup and refuses to boot with an explicit
-message if this was missed, so you get a clear error in the container log
-rather than a mysterious login failure.
-
-If you would rather keep secrets out of the compose file entirely, delete the
-`environment:` block, `cp .env.example .env`, and add `env_file: [.env]`
-instead. Values in an env file are passed through verbatim — no `$` doubling
-needed there.
+Miss that and the app refuses to boot with a message naming this exact cause,
+rather than silently rejecting your password forever.
 
 ### Without Docker
 
@@ -68,12 +59,16 @@ DATA_DIR=./data ADMIN_USER=me ADMIN_PASSWORD_HASH='...' npm start
 
 `npm run dev` reads `.env` automatically and restarts on file changes.
 
+Building the image yourself: `docker build -t iou .` — the compose file pulls
+the published image, so swap `image:` for `build: .` if you want a local build.
+
 ## Environment variables
 
 | Variable | Required | Default | What it does |
 | --- | --- | --- | --- |
 | `ADMIN_USER` | yes | — | The one login name. There is no registration route. |
-| `ADMIN_PASSWORD_HASH` | yes | — | bcrypt hash from `npm run hash-password`. Double every `$` if you put it in the compose file. Checked at startup. |
+| `ADMIN_PASSWORD` | one of these | — | Plaintext password, hashed at boot. Simplest, but it lives in your compose file. |
+| `ADMIN_PASSWORD_HASH` | one of these | — | bcrypt hash. Nothing plaintext anywhere. Double every `$` in a compose file. Wins if both are set. |
 | `SESSION_SECRET` | no | generated | Signs the session cookie. Left unset, a random secret is written to `/data/session_secret` on first run and reused. |
 | `VENMO_HANDLE` | no | — | Adds a Venmo button to the share page. Unset means no button. |
 | `PAYPAL_ME` | no | — | Adds a PayPal button. |

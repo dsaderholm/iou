@@ -52,6 +52,9 @@ const config = {
   dataDir: DATA_DIR,
   adminUser: process.env.ADMIN_USER || '',
   adminPasswordHash: process.env.ADMIN_PASSWORD_HASH || '',
+  // Convenience for pasted compose stacks: a plaintext password that gets
+  // hashed once at boot. ADMIN_PASSWORD_HASH wins when both are present.
+  adminPassword: process.env.ADMIN_PASSWORD || '',
   sessionSecret: resolveSessionSecret(),
   sessionTtlSeconds: Number(process.env.SESSION_TTL_SECONDS || 60 * 60 * 24 * 30),
   cookieName: process.env.COOKIE_NAME || 'iou_session',

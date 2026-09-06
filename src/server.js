@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const express = require('express');
+const bcrypt = require('bcryptjs');
 
 const config = require('./config');
 const db = require('./db');
@@ -360,27 +361,37 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 /* ------------------------------------------------------------------- start */
 
 function start() {
-  const problems = [];
-  if (!config.adminUser) problems.push('ADMIN_USER is not set');
-  if (!config.adminPasswordHash) problems.push('ADMIN_PASSWORD_HASH is not set');
-
-  if (problems.length) {
-    console.error('[iou] refusing to start: ' + problems.join(', '));
-    console.error("[iou] generate a hash with: npm run hash-password -- 'your password'");
+  if (!config.adminUser) {
+    console.error('[iou] refusing to start: ADMIN_USER is not set.');
     process.exit(1);
   }
 
-  // Fail loudly on a malformed hash rather than letting every login fail with
-  // no explanation. The overwhelmingly common cause is a hash pasted into a
-  // compose file without doubling its dollar signs, so name that directly.
-  if (!auth.looksLikeBcryptHash(config.adminPasswordHash)) {
-    console.error('[iou] refusing to start: ADMIN_PASSWORD_HASH is not a valid bcrypt hash.');
-    console.error(`[iou] got: ${JSON.stringify(config.adminPasswordHash)}`);
-    if (!config.adminPasswordHash.startsWith('$2')) {
-      console.error('[iou] it should start with "$2b$". If you put it straight into a');
-      console.error('[iou] compose file, docker compose ate the dollar signs: write them');
-      console.error('[iou] doubled, as $$2b$$12$$... , or move it into an env_file.');
+  if (config.adminPasswordHash) {
+    // Fail loudly on a malformed hash rather than letting every login fail with
+    // no explanation. The overwhelmingly common cause is a hash pasted into a
+    // compose file without doubling its dollar signs, so name that directly.
+    if (!auth.looksLikeBcryptHash(config.adminPasswordHash)) {
+      console.error('[iou] refusing to start: ADMIN_PASSWORD_HASH is not a valid bcrypt hash.');
+      console.error(`[iou] got: ${JSON.stringify(config.adminPasswordHash)}`);
+      if (!config.adminPasswordHash.startsWith('$2')) {
+        console.error('[iou] it should start with "$2b$". If you put it straight into a');
+        console.error('[iou] compose file, docker compose ate the dollar signs: write them');
+        console.error('[iou] doubled as $$2b$$12$$... , or just use ADMIN_PASSWORD instead');
+        console.error('[iou] and let the app do the hashing.');
+      }
+      process.exit(1);
     }
+  } else if (config.adminPassword) {
+    // Hash the plaintext once, here, so nothing downstream ever sees it. The
+    // password still sits in the compose file, which is the tradeoff for not
+    // having to run a command to deploy.
+    config.adminPasswordHash = bcrypt.hashSync(config.adminPassword, 12);
+    console.warn('[iou] using ADMIN_PASSWORD; it is stored in plaintext wherever you');
+    console.warn("[iou] set it. To avoid that, run: npm run hash-password -- 'pw'");
+    console.warn('[iou] and set ADMIN_PASSWORD_HASH instead.');
+  } else {
+    console.error('[iou] refusing to start: set ADMIN_PASSWORD (simplest) or');
+    console.error('[iou] ADMIN_PASSWORD_HASH (no plaintext in your config).');
     process.exit(1);
   }
 
