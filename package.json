@@ -18,5 +18,11 @@
     "bcryptjs": "^3.0.2",
     "better-sqlite3": "^12.2.0",
     "express": "^5.1.0"
+  },
+  "license": "MIT",
+  "author": "D.J. Saderholm",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dsaderholm/iou.git"
   }
 }

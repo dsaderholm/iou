@@ -174,3 +174,7 @@ src/views.js    HTML
 src/csv.js      export
 public/         stylesheet and the person-page script
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
