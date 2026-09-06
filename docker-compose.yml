@@ -1,0 +1,28 @@
+services:
+  iou:
+    build: .
+    image: iou
+    container_name: iou
+    restart: unless-stopped
+
+    # Copy .env.example to .env first. env_file passes values through verbatim,
+    # which matters: a bcrypt hash is full of "$" and would be eaten by compose
+    # variable substitution if it were referenced as ${ADMIN_PASSWORD_HASH}.
+    env_file:
+      - .env
+
+    ports:
+      - "3000:3000"
+
+    volumes:
+      - iou-data:/data
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/robots.txt').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  iou-data:
