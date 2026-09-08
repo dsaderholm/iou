@@ -393,3 +393,91 @@ test('a guessing address locks itself out without locking out the owner', async 
       { cookie: null, headers: owner })).status,
     303, 'a different address is unaffected');
 });
+
+/* ------------------------------------------------ archiving discloses money */
+
+test('archiving someone who owes asks first, naming the amount', async () => {
+  const id = await addPerson('Still Owes');
+  await post(`/p/${id}/entries`, { kind: 'charge', amount: '250' });
+
+  const page = await text(await get(`/p/${id}`));
+  const form = page.match(/<form method="post" action="\/p\/\d+\/archive"[\s\S]*?>/);
+  assert.ok(form, 'the archive form should be present');
+  assert.match(form[0], /data-confirm="/, 'it must ask before hiding a balance');
+  assert.match(form[0], /\$250\.00/, 'and say how much is at stake');
+  assert.match(form[0], /Owed to you/, 'and name the consequence');
+});
+
+test('archiving a settled person asks nothing', async () => {
+  const id = await addPerson('All Square');
+  await post(`/p/${id}/entries`, { kind: 'charge', amount: '10' });
+  await post(`/p/${id}/entries`, { kind: 'payment', amount: '10' });
+
+  const page = await text(await get(`/p/${id}`));
+  const form = page.match(/<form method="post" action="\/p\/\d+\/archive"[\s\S]*?>/);
+  assert.ok(form);
+  assert.doesNotMatch(form[0], /data-confirm/, 'nothing is at stake, so no dialog');
+});
+
+test('unarchiving never asks', async () => {
+  const id = await addPerson('Coming Back');
+  await post(`/p/${id}/entries`, { kind: 'charge', amount: '75' });
+  await post(`/p/${id}/archive`);
+
+  const page = await text(await get(`/p/${id}`));
+  const form = page.match(/<form method="post" action="\/p\/\d+\/unarchive"[\s\S]*?>/);
+  assert.ok(form);
+  assert.doesNotMatch(form[0], /data-confirm/);
+});
+
+test('the home page names archived money instead of dropping it', async () => {
+  const id = await addPerson('Hidden Debt');
+  await post(`/p/${id}/entries`, { kind: 'charge', amount: '410' });
+
+  const before = await text(await get('/'));
+  const owedBefore = before.match(/Owed to you<\/span><span class="amount owed">([^<]+)</)[1];
+  const archivedBefore = db.archivedSummary().owed;
+
+  await post(`/p/${id}/archive`);
+
+  const after = await text(await get('/'));
+  const owedAfter = after.match(/Owed to you<\/span><span class="amount owed">([^<]+)</)[1];
+  const archivedAfter = db.archivedSummary().owed;
+
+  // The headline total legitimately drops: archived people are not active.
+  assert.notEqual(owedAfter, owedBefore);
+  // The same money moves into the archived figure, penny for penny.
+  assert.equal(archivedAfter - archivedBefore, 41000);
+
+  // And that figure must be stated on the page, not silently gone. This is the
+  // second layer, and the one that still works with JavaScript off, when the
+  // confirm() dialog does not.
+  const { formatCents } = require('../src/money');
+  assert.ok(
+    after.includes(`${formatCents(archivedAfter)} owed, not counted above`),
+    `home page should name ${formatCents(archivedAfter)} as archived and uncounted`
+  );
+});
+
+test('archived credit is not reported as money owed', async () => {
+  const id = await addPerson('Overpaid Then Left');
+  await post(`/p/${id}/entries`, { kind: 'payment', amount: '30' });
+  await post(`/p/${id}/archive`);
+
+  const summary = db.archivedSummary();
+  assert.ok(summary.count > 0);
+  // A negative balance is a credit, not something owed; it must not net off
+  // against another archived person's debt either.
+  assert.ok(summary.owed >= 0, 'owed is a sum of debts, never a net');
+});
+
+/* ------------------------------------------------------- session lifetime */
+
+test('a login lasts a year, not a month', async () => {
+  const res = await post('/login', { username: 'admin', password: 'hunter2' }, { cookie: null });
+  const cookie = res.headers.getSetCookie().find((c) => c.startsWith('iou_session='));
+  const maxAge = Number(cookie.match(/Max-Age=(\d+)/i)[1]);
+
+  const days = maxAge / 86400;
+  assert.ok(days > 300, `expected roughly a year, got ${Math.round(days)} days`);
+});

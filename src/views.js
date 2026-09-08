@@ -134,7 +134,7 @@ function loginPage({ error, nextUrl }) {
 
 /* --------------------------------------------------------------- admin home */
 
-function homePage({ people, archivedCount, notice, error }) {
+function homePage({ people, archived, notice, error }) {
   const net = people.reduce((sum, p) => sum + p.balance, 0);
   const owedTotal = people.reduce((sum, p) => sum + (p.balance > 0 ? p.balance : 0), 0);
 
@@ -148,8 +148,15 @@ function homePage({ people, archivedCount, notice, error }) {
         </a>
       </li>`).join('')}</ul>`;
 
-  const archivedLink = archivedCount > 0
-    ? `<p class="archived-link"><a href="/archived">Archived (${archivedCount})</a></p>`
+  // "Owed to you" counts active people only, so any money owed by an archived
+  // person has to be named here. Otherwise archiving looks like tidying while
+  // quietly shrinking the one number this page exists to show.
+  const archivedLink = archived && archived.count > 0
+    ? `<p class="archived-link">
+    <a href="/archived">Archived (${archived.count})</a>${archived.owed > 0
+      ? `<span class="archived-owed">${esc(formatCents(archived.owed))} owed, not counted above</span>`
+      : ''}
+  </p>`
     : '';
 
   const body = `
@@ -316,7 +323,10 @@ ${datalist('payment-history', paymentSuggestions)}
     </div>
   </form>
   <div class="danger-actions">
-    <form method="post" action="/p/${person.id}/${archived ? 'unarchive' : 'archive'}" class="inline-form">
+    <form method="post" action="/p/${person.id}/${archived ? 'unarchive' : 'archive'}" class="inline-form"${
+      !archived && balance !== 0
+        ? `\n          data-confirm="${esc(person.name)} still has a balance of ${esc(formatCents(balance))}. Archiving takes it out of your Owed to you total. Archive anyway?"`
+        : ''}>
       <button class="linkish" type="submit">${archived ? 'Unarchive' : 'Archive'}</button>
     </form>
     <form method="post" action="/p/${person.id}/delete" class="inline-form"

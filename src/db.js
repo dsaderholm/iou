@@ -106,8 +106,23 @@ function listArchivedPeople() {
   `).all();
 }
 
-function countArchived() {
-  return db.prepare('SELECT COUNT(*) AS n FROM people WHERE archived_at IS NOT NULL').get().n;
+/**
+ * How many people are archived and how much of what they owe is sitting out
+ * of sight. The home page's "Owed to you" leaves archived people out, so that
+ * money has to be visible somewhere or archiving quietly shrinks the number.
+ */
+function archivedSummary() {
+  return db.prepare(`
+    SELECT COUNT(*) AS count,
+           COALESCE(SUM(CASE WHEN balance > 0 THEN balance ELSE 0 END), 0) AS owed
+    FROM (
+      SELECT COALESCE(SUM(e.amount), 0) AS balance
+      FROM people p
+      LEFT JOIN entries e ON e.person_id = p.id AND e.deleted_at IS NULL
+      WHERE p.archived_at IS NOT NULL
+      GROUP BY p.id
+    )
+  `).get();
 }
 
 function getPerson(id) {
@@ -259,7 +274,7 @@ module.exports = {
   createPerson,
   listPeopleWithBalances,
   listArchivedPeople,
-  countArchived,
+  archivedSummary,
   getPerson,
   getPersonByToken,
   getBalance,

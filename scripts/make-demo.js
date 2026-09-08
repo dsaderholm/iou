@@ -72,7 +72,7 @@ const SCREENS = [
   { key: 'edit', route: '/p/1/entries/2/edit', name: 'Fixing a mistake',
     note: 'Amount, wording, or direction. The original date stays put.' },
   { key: 'archived', route: '/archived', name: 'Archived',
-    note: 'Off the main list and out of its totals, with every entry kept.' },
+    note: 'Off the main list and out of its totals, with every entry kept. The home page keeps naming the money so it never disappears quietly.' },
   { key: 'share', route: '/t/<token>', name: 'What they see', anon: true, public: true,
     note: 'No login, no forms, no route to anyone else. Amounts prefilled into the payment buttons.' },
 ];
@@ -106,10 +106,12 @@ async function main() {
     const id = db.createPerson(name);
     for (const [, amount, description] of entries) db.addEntry(id, amount, description);
   }
-  // One archived person, so that screen has something in it.
+  // One archived person, still carrying a balance, so the gallery shows what
+  // archiving actually does: takes them out of "Owed to you" while the home
+  // page keeps naming the money underneath the list.
   const cabin = db.createPerson('Cabin Fund 2025');
   db.addEntry(cabin, 32000, 'Deposit');
-  db.addEntry(cabin, -32000, 'Settled up');
+  db.addEntry(cabin, -14000, 'Partial, cash');
   db.setArchived(cabin, true);
 
   const server = app.listen(0);

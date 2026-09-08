@@ -356,7 +356,22 @@ button, .button {
   flex-wrap: wrap;
 }
 
-.archived-link { margin: 1.5rem 0 0; font-size: .9rem; text-align: center; }
+.archived-link {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .2rem;
+  margin: 1.5rem 0 0;
+  font-size: .9rem;
+  text-align: center;
+}
+
+/* Money that "Owed to you" deliberately leaves out. Stated, not hidden. */
+.archived-owed {
+  font-size: .8rem;
+  color: var(--owed);
+  font-variant-numeric: tabular-nums;
+}
 
 /* ------------------------------------------------------------- edit entry */
 

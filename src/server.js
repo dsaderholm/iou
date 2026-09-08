@@ -319,7 +319,7 @@ app.use(auth.requireAuth);
 app.get('/', (req, res) => {
   html(res, views.homePage({
     people: db.listPeopleWithBalances(),
-    archivedCount: db.countArchived(),
+    archived: db.archivedSummary(),
     notice: notice(req),
     error: errorMsg(req),
   }));

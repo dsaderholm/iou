@@ -56,7 +56,10 @@ const config = {
   // hashed once at boot. ADMIN_PASSWORD_HASH wins when both are present.
   adminPassword: process.env.ADMIN_PASSWORD || '',
   sessionSecret: resolveSessionSecret(),
-  sessionTtlSeconds: Number(process.env.SESSION_TTL_SECONDS || 60 * 60 * 24 * 30),
+  // A year. The threat this cookie defends against is someone holding your
+  // unlocked phone, which a shorter window does not change; all a 30 day
+  // window bought was a long password typed on a phone keyboard every month.
+  sessionTtlSeconds: Number(process.env.SESSION_TTL_SECONDS || 60 * 60 * 24 * 365),
   cookieName: process.env.COOKIE_NAME || 'iou_session',
   siteTitle: process.env.SITE_TITLE || 'IOU',
   // Who the money is owed to. Shown on the share page next to the payment links.

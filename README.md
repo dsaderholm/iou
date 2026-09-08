@@ -80,7 +80,7 @@ the published image, so swap `image:` for `build: .` if you want a local build.
 | `TZ` | no | `UTC` | Timestamps are stored in UTC and displayed in this zone. |
 | `PORT` | no | `3000` | Port inside the container. |
 | `DATA_DIR` | no | `/data` | Where the database and generated secret live. |
-| `SESSION_TTL_SECONDS` | no | 30 days | How long a login lasts. |
+| `SESSION_TTL_SECONDS` | no | 1 year | How long a login lasts. Long on purpose: the phone's own lock screen is the real guard, and a shorter window only means retyping a long password. |
 | `TRUST_PROXY` | no | `true` | Passed to Express `trust proxy`. Set `false` if not behind a proxy. |
 
 Payment handles accept a bare handle or a full profile URL; the extra parts are
@@ -124,6 +124,10 @@ phone costs nothing.
 every entry, which is almost always what you want instead of *Delete
 permanently*. Their share link keeps working. Archived people live at
 `/archived` with their own total.
+
+Because archiving removes someone from *Owed to you*, it says so twice: it asks
+first if they still have a balance, and the home page keeps naming the archived
+amount underneath the list. Money never leaves that page silently.
 
 **CSV** in the header exports every entry for every person, with `amount_cents`
 as the authoritative column and a signed `amount_usd` for spreadsheets.
