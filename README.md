@@ -12,6 +12,7 @@ Not bill splitting, not invoicing, not budgeting.
 - The admin UI is built for a phone: everything is within two taps of the home
   screen, and amount fields use `inputmode="decimal"` so Android opens the
   number pad.
+- Installs to the home screen. Open it from an icon, not a bookmark.
 
 ## Quick start
 
@@ -87,22 +88,47 @@ trimmed off.
 
 ## Using it
 
+**Install it first.** Open the app in Chrome on Android, then *Add to home
+screen* from the menu. It launches standalone, with no browser chrome, straight
+onto the people list. That single step does more for how fast entry feels than
+anything else here.
+
 **Home** lists everyone with their current balance, largest debt first, plus the
 total owed to you. Adding a person takes a name and drops you straight onto
 their page, so adding someone and charging them is one continuous motion.
 
 **A person's page** has the balance, an *Add charge* form and a *Record payment*
-form side by side at the top, the share link with a one-tap copy button, and the
-full history with a running balance beside every entry. A payment is stored as a
-negative entry on the same tab — there are no separate loans or invoices.
+form at the top, the share link with one-tap copy (and the Android share sheet,
+where the browser supports it), and the full history with a running balance
+beside every entry. A payment is stored as a negative entry on the same tab —
+there are no separate loans or invoices.
+
+**Settle up** records a payment for exactly what is owed, in one tap. The
+balance is read when you tap it rather than trusted from the page, so the tab
+always lands on zero even if something changed since it was rendered.
+
+**Descriptions autocomplete** from that person's own history, kept separate for
+charges and payments, so a repeat "Gas money" is a tap instead of typing.
 
 Amounts accept anything a phone keypad or a paste produces: `12`, `12.5`,
 `12.34`, `$1,234.56`. More than two decimal places is rejected rather than
 rounded, so a typo is visible instead of silent. The form decides the sign, not
 the text you type.
 
+**Mistakes are recoverable.** *Edit* changes an entry's amount, description or
+direction while keeping its original date and position in the history. *Delete*
+is a soft delete, and the notice that follows offers **Undo** — a mis-tap on a
+phone costs nothing.
+
+**Archive** takes someone off the main list and out of its totals while keeping
+every entry, which is almost always what you want instead of *Delete
+permanently*. Their share link keeps working. Archived people live at
+`/archived` with their own total.
+
 **CSV** in the header exports every entry for every person, with `amount_cents`
 as the authoritative column and a signed `amount_usd` for spreadsheets.
+**Download database backup** at the bottom of the home page gives you the whole
+SQLite file, share tokens included, which the CSV cannot do.
 
 ## The share page
 
@@ -143,7 +169,12 @@ location / {
 
 ## Backups
 
-Everything is in the volume: `iou.db` plus the generated `session_secret`.
+The quickest backup is **Download database backup** on the home page: it goes
+through SQLite's backup API, so it is consistent even mid-write, and it
+contains the share tokens a CSV does not.
+
+For a copy taken from outside the app, everything is in the volume: `iou.db`
+plus the generated `session_secret`.
 
 ```bash
 docker compose exec iou sh -c 'ls -la /data'
@@ -161,7 +192,9 @@ npm test
 
 Covers amount parsing and formatting, balance arithmetic including overpayment,
 the auth gate, session cookie flags, share-page isolation and 404 behaviour,
-token regeneration, HTML escaping, and the CSV export.
+token regeneration, HTML escaping, the CSV export, settle-up, entry editing,
+undo, archiving, the manifest and icons, the database download, and login
+throttling. `test/boot.test.js` spawns real servers to check startup.
 
 ## Layout
 
@@ -172,8 +205,12 @@ src/auth.js     password check, signed session cookie
 src/money.js    cents parsing and formatting
 src/views.js    HTML
 src/csv.js      export
-public/         stylesheet and the person-page script
+public/         stylesheet, the person-page script, and generated icons
+scripts/        password hashing, icon generation
 ```
+
+Icons are rendered by `node scripts/make-icons.js` from signed distance fields
+and committed, so a build never has to run it.
 
 ## License
 

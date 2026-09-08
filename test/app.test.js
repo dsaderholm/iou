@@ -287,7 +287,7 @@ test('a bad amount adds nothing and reports why', async () => {
   assert.equal(db.listEntries(id).length, 0);
 });
 
-test('deleting an entry corrects the balance', async () => {
+test('deleting an entry corrects the balance, and undo puts it back', async () => {
   const id = await addPerson('Fat Finger');
   await post(`/p/${id}/entries`, { kind: 'charge', amount: '5' });
   await post(`/p/${id}/entries`, { kind: 'charge', amount: '5000' });
@@ -297,6 +297,15 @@ test('deleting an entry corrects the balance', async () => {
   const res = await post(`/p/${id}/entries/${typo.id}/delete`);
   assert.equal(res.status, 303);
   assert.equal(db.getBalance(id), 500);
+
+  // The redirect carries the id back so the flash can offer an Undo.
+  assert.match(res.headers.get('location'), new RegExp(`undo=${typo.id}`));
+  const page = await (await get(res.headers.get('location'))).text();
+  assert.match(page, new RegExp(`/entries/${typo.id}/restore`));
+
+  await post(`/p/${id}/entries/${typo.id}/restore`);
+  assert.equal(db.getBalance(id), 500500, 'undo restores the exact amount');
+  assert.equal(db.listEntries(id).length, 2);
 });
 
 test('an entry cannot be deleted through another person', async () => {

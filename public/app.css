@@ -280,6 +280,10 @@ button, .button {
 /* ------------------------------------------------------------- misc / flash */
 
 .flash {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .25rem .75rem;
   margin: 0 0 1rem;
   padding: .7rem .85rem;
   border-radius: 10px;
@@ -309,3 +313,85 @@ button, .button {
 @media (min-width: 30rem) {
   .entry-form button { width: auto; min-width: 12rem; }
 }
+
+/* ------------------------------------------------------------ settle / badge */
+
+.settle-form { margin: 0 0 1rem; }
+.settle { width: 100%; border-color: var(--accent); color: var(--accent); font-weight: 650; }
+
+.badge {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: .5rem;
+  padding: .15rem .5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: .7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+/* Forms that sit inside a row of other controls contribute only their button. */
+.inline-form { display: contents; }
+
+.entry-action { font-size: .8rem; }
+
+.entry-meta .entry-action,
+.entry-meta .linkish { flex: 0 0 auto; }
+
+/* ------------------------------------------------------------- flash actions */
+
+.flash .inline-form button { margin-left: .5rem; font-weight: 650; }
+
+/* ------------------------------------------------------------- danger zone */
+
+.danger-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.archived-link { margin: 1.5rem 0 0; font-size: .9rem; text-align: center; }
+
+/* ------------------------------------------------------------- edit entry */
+
+.entry-form label {
+  display: block;
+  font-size: .85rem;
+  color: var(--muted);
+  margin: .75rem 0 .35rem;
+}
+
+.entry-form .kind {
+  margin: 1rem 0 .25rem;
+  padding: .75rem .85rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.entry-form .kind legend {
+  padding: 0 .35rem;
+  font-size: .8rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.entry-form .kind label {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  margin: 0;
+  min-height: 40px;
+  font-size: 1rem;
+  color: var(--text);
+}
+
+.entry-form .kind input[type="radio"] { width: 20px; height: 20px; accent-color: var(--accent); }
+
+.entry-form .button.secondary { width: 100%; margin-top: .5rem; }

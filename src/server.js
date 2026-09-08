@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -33,6 +35,11 @@ const NOTICES = {
   token_regenerated: 'New share link generated. The old link no longer works.',
   renamed: 'Name updated.',
   person_deleted: 'Person deleted.',
+  entry_restored: 'Entry restored.',
+  entry_updated: 'Entry updated.',
+  settled: 'Settled up.',
+  archived: 'Archived.',
+  unarchived: 'Moved back to the main list.',
 };
 
 const ERRORS = {
@@ -43,6 +50,7 @@ const ERRORS = {
   zero: 'Enter an amount greater than zero.',
   name_required: 'A name is required.',
   not_found: 'That entry no longer exists.',
+  nothing_owed: 'Nothing to settle: they do not owe anything.',
 };
 
 const notice = (req) => NOTICES[req.query.m] || '';
@@ -60,7 +68,9 @@ app.use((req, res, next) => {
   res.setHeader(
     'Content-Security-Policy',
     "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:; " +
-    "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+    // manifest-src is required explicitly: under default-src 'none' the
+    // browser blocks the manifest fetch and never offers to install the app.
+    "manifest-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
   );
   next();
 });
@@ -168,6 +178,30 @@ app.get('/robots.txt', (req, res) => {
 });
 
 /**
+ * Served rather than static because the title is configurable. Public because
+ * a manifest is fetched without credentials: behind the session gate it would
+ * redirect to the login form and the install prompt would never appear.
+ */
+app.get('/manifest.webmanifest', (req, res) => {
+  res.type('application/manifest+json').set('Cache-Control', 'public, max-age=3600').send(JSON.stringify({
+    name: config.siteTitle,
+    short_name: config.siteTitle,
+    description: 'Who owes you what.',
+    start_url: '/',
+    scope: '/',
+    display: 'standalone',
+    orientation: 'portrait',
+    background_color: '#f6f6f4',
+    theme_color: '#1f6f4a',
+    icons: [
+      { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+      { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+      { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+    ],
+  }, null, 2));
+});
+
+/**
  * The one unauthenticated view. A wrong token gets the same plain 404 as any
  * other unknown path: no hint about token length, alphabet, or existence.
  */
@@ -182,18 +216,54 @@ app.get('/t/:token', (req, res) => {
 
 /* ------------------------------------------------------------------- login */
 
-// One admin, so a single global window is enough to blunt password guessing.
+/*
+ * Login throttling.
+ *
+ * Per-IP first, so a stranger guessing passwords locks themselves out and not
+ * the one person who actually uses this. The global counter is a backstop for
+ * a spread-out attack: with `trust proxy` on, the client-facing IP comes from
+ * X-Forwarded-For and an attacker upstream could rotate it, which would slip
+ * past a per-IP limit alone. It is set high enough that ordinary fat-fingering
+ * never reaches it.
+ */
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const LOGIN_MAX_FAILURES = 20;
-let loginFailures = 0;
-let loginWindowStart = Date.now();
+const PER_IP_MAX_FAILURES = 10;
+const GLOBAL_MAX_FAILURES = 100;
 
-function loginBlocked() {
-  if (Date.now() - loginWindowStart > LOGIN_WINDOW_MS) {
-    loginFailures = 0;
-    loginWindowStart = Date.now();
+const failuresByIp = new Map();
+let globalFailures = 0;
+let globalWindowStart = Date.now();
+
+function pruneThrottle(now) {
+  if (now - globalWindowStart > LOGIN_WINDOW_MS) {
+    globalFailures = 0;
+    globalWindowStart = now;
   }
-  return loginFailures >= LOGIN_MAX_FAILURES;
+  for (const [ip, record] of failuresByIp) {
+    if (now - record.start > LOGIN_WINDOW_MS) failuresByIp.delete(ip);
+  }
+  // Never let an attacker grow this without bound by rotating addresses.
+  if (failuresByIp.size > 10000) failuresByIp.clear();
+}
+
+function loginBlocked(req) {
+  const now = Date.now();
+  pruneThrottle(now);
+  const record = failuresByIp.get(req.ip);
+  if (record && record.count >= PER_IP_MAX_FAILURES) return true;
+  return globalFailures >= GLOBAL_MAX_FAILURES;
+}
+
+function noteLoginFailure(req) {
+  const now = Date.now();
+  const record = failuresByIp.get(req.ip);
+  if (record && now - record.start <= LOGIN_WINDOW_MS) record.count += 1;
+  else failuresByIp.set(req.ip, { count: 1, start: now });
+  globalFailures += 1;
+}
+
+function clearLoginFailures(req) {
+  failuresByIp.delete(req.ip);
 }
 
 /**
@@ -218,7 +288,7 @@ app.get('/login', (req, res) => {
 app.post('/login', async (req, res) => {
   const nextUrl = safeNext(req.body.next);
 
-  if (loginBlocked()) {
+  if (loginBlocked(req)) {
     return html(res, views.loginPage({
       nextUrl,
       error: 'Too many attempts. Wait a few minutes and try again.',
@@ -227,11 +297,11 @@ app.post('/login', async (req, res) => {
 
   const ok = await auth.checkCredentials(req.body.username, req.body.password);
   if (!ok) {
-    loginFailures += 1;
+    noteLoginFailure(req);
     return html(res, views.loginPage({ nextUrl, error: 'Wrong username or password.' }), 401);
   }
 
-  loginFailures = 0;
+  clearLoginFailures(req);
   auth.setSessionCookie(req, res, config.adminUser);
   res.redirect(303, nextUrl);
 });
@@ -249,6 +319,7 @@ app.use(auth.requireAuth);
 app.get('/', (req, res) => {
   html(res, views.homePage({
     people: db.listPeopleWithBalances(),
+    archivedCount: db.countArchived(),
     notice: notice(req),
     error: errorMsg(req),
   }));
@@ -276,6 +347,17 @@ app.get('/p/:id', (req, res) => {
     entries,
     balance,
     shareUrl: `${baseUrl(req)}/t/${person.share_token}`,
+    chargeSuggestions: db.recentDescriptions(person.id, false),
+    paymentSuggestions: db.recentDescriptions(person.id, true),
+    notice: notice(req),
+    error: errorMsg(req),
+    undoEntryId: parseId(req.query.undo),
+  }));
+});
+
+app.get('/archived', (req, res) => {
+  html(res, views.archivedPage({
+    people: db.listArchivedPeople(),
     notice: notice(req),
     error: errorMsg(req),
   }));
@@ -306,8 +388,84 @@ app.post('/p/:id/entries/:entryId/delete', (req, res) => {
   const person = id && db.getPerson(id);
   if (!person || !entryId) return notFound(res);
 
-  const removed = db.deleteEntry(person.id, entryId);
-  res.redirect(303, `/p/${person.id}?${removed ? 'm=entry_deleted' : 'e=not_found'}`);
+  // Soft delete, so the redirect can carry an Undo for the row just hidden.
+  const removed = db.softDeleteEntry(person.id, entryId);
+  res.redirect(303, removed
+    ? `/p/${person.id}?m=entry_deleted&undo=${entryId}`
+    : `/p/${person.id}?e=not_found`);
+});
+
+app.post('/p/:id/entries/:entryId/restore', (req, res) => {
+  const id = parseId(req.params.id);
+  const entryId = parseId(req.params.entryId);
+  const person = id && db.getPerson(id);
+  if (!person || !entryId) return notFound(res);
+
+  const restored = db.restoreEntry(person.id, entryId);
+  res.redirect(303, `/p/${person.id}?${restored ? 'm=entry_restored' : 'e=not_found'}`);
+});
+
+app.get('/p/:id/entries/:entryId/edit', (req, res) => {
+  const id = parseId(req.params.id);
+  const entryId = parseId(req.params.entryId);
+  const person = id && db.getPerson(id);
+  const entry = person && entryId && db.getEntry(person.id, entryId);
+  if (!person || !entry) return notFound(res);
+
+  html(res, views.editEntryPage({ person, entry, error: errorMsg(req) }));
+});
+
+app.post('/p/:id/entries/:entryId/edit', (req, res) => {
+  const id = parseId(req.params.id);
+  const entryId = parseId(req.params.entryId);
+  const person = id && db.getPerson(id);
+  const entry = person && entryId && db.getEntry(person.id, entryId);
+  if (!person || !entry) return notFound(res);
+
+  const parsed = parseAmount(req.body.amount);
+  if (!parsed.ok) {
+    return res.redirect(303, `/p/${person.id}/entries/${entry.id}/edit?e=${parsed.code}`);
+  }
+
+  const amount = req.body.kind === 'payment' ? -parsed.cents : parsed.cents;
+  const description = String(req.body.description == null ? '' : req.body.description)
+    .trim().slice(0, 200);
+
+  db.updateEntry(person.id, entry.id, amount, description);
+  res.redirect(303, `/p/${person.id}?m=entry_updated`);
+});
+
+/**
+ * Record a payment for exactly what is owed. The balance is read here rather
+ * than trusted from the form, so the tab always lands on zero even if it moved
+ * since the page was rendered.
+ */
+app.post('/p/:id/settle', (req, res) => {
+  const id = parseId(req.params.id);
+  const person = id && db.getPerson(id);
+  if (!person) return notFound(res);
+
+  const balance = db.getBalance(person.id);
+  if (balance <= 0) return res.redirect(303, `/p/${person.id}?e=nothing_owed`);
+
+  db.addEntry(person.id, -balance, 'Settled up');
+  res.redirect(303, `/p/${person.id}?m=settled`);
+});
+
+app.post('/p/:id/archive', (req, res) => {
+  const id = parseId(req.params.id);
+  const person = id && db.getPerson(id);
+  if (!person) return notFound(res);
+  db.setArchived(person.id, true);
+  res.redirect(303, '/?m=archived');
+});
+
+app.post('/p/:id/unarchive', (req, res) => {
+  const id = parseId(req.params.id);
+  const person = id && db.getPerson(id);
+  if (!person) return notFound(res);
+  db.setArchived(person.id, false);
+  res.redirect(303, `/p/${person.id}?m=unarchived`);
 });
 
 app.post('/p/:id/rename', (req, res) => {
@@ -346,6 +504,32 @@ app.get('/export.csv', (req, res) => {
     .set('Cache-Control', 'no-store')
     .set('Content-Disposition', `attachment; filename="iou-entries-${stamp}.csv"`)
     .send(entriesToCsv(db.allEntriesForExport()));
+});
+
+/**
+ * A consistent copy of the whole database, for backups.
+ *
+ * Goes through SQLite's backup API into a temp file rather than streaming the
+ * live file: with WAL enabled the .db on its own is missing whatever is still
+ * in the write-ahead log, so a naive copy can restore short of where you were.
+ * Unlike the CSV this includes share tokens, so it can actually be restored.
+ */
+app.get('/export.db', async (req, res, next) => {
+  const stamp = new Date().toISOString().slice(0, 10);
+  const tmp = path.join(os.tmpdir(), `iou-backup-${process.pid}-${Date.now()}.db`);
+  try {
+    await db.backupTo(tmp);
+    res.set('Cache-Control', 'no-store')
+      .set('Content-Disposition', `attachment; filename="iou-${stamp}.db"`)
+      .type('application/octet-stream')
+      .sendFile(tmp, (err) => {
+        fs.rm(tmp, { force: true }, () => {});
+        if (err && !res.headersSent) next(err);
+      });
+  } catch (err) {
+    fs.rm(tmp, { force: true }, () => {});
+    next(err);
+  }
 });
 
 /* ------------------------------------------------------------ 404 / errors */

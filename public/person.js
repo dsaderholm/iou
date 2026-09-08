@@ -31,3 +31,23 @@ if (copyBtn) {
     }
   });
 }
+
+// The Android share sheet turns "send this to them" into one gesture instead
+// of copy, leave, open the messaging app, paste. Revealed only where the API
+// exists, so nothing dead is ever shown.
+const shareBtn = document.getElementById('share-btn');
+
+if (shareBtn && navigator.share) {
+  shareBtn.hidden = false;
+  shareBtn.addEventListener('click', async () => {
+    try {
+      await navigator.share({
+        title: shareBtn.dataset.name,
+        text: `Here is your running tab, ${shareBtn.dataset.name}:`,
+        url: shareBtn.dataset.url,
+      });
+    } catch (err) {
+      // AbortError just means the sheet was dismissed; nothing to report.
+    }
+  });
+}

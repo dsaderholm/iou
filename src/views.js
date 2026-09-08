@@ -48,9 +48,22 @@ function isoDate(s) {
  * @param {string} opts.title
  * @param {string} opts.body
  * @param {boolean} [opts.chrome]     render the admin header
+ * @param {boolean} [opts.installable] link the web app manifest
  * @param {string}  [opts.scriptSrc]  external script, loaded deferred
  */
-function layout({ title, body, chrome = false, scriptSrc = '' }) {
+function layout({ title, body, chrome = false, installable = false, scriptSrc = '' }) {
+  // The manifest is only linked on admin pages. A share page is opened by
+  // someone who cannot use the app, and offering to install it would just
+  // give them a home screen icon leading to a login form.
+  const install = installable
+    ? `<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#1f6f4a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="${esc(config.siteTitle)}">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">`
+    : '';
+
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -60,7 +73,8 @@ function layout({ title, body, chrome = false, scriptSrc = '' }) {
 <meta name="color-scheme" content="light dark">
 <title>${esc(title)}</title>
 <link rel="stylesheet" href="/app.css">
-<link rel="icon" href="data:,">
+<link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+${install}
 ${scriptSrc ? `<script src="${esc(scriptSrc)}" defer></script>` : ''}
 </head>
 <body>
@@ -82,9 +96,14 @@ function adminHeader() {
 </header>`;
 }
 
-function flash(kind, message) {
+/**
+ * A div, not a p: the notice can carry an Undo form, and a <form> start tag
+ * implicitly closes an open <p>, which would leave the button stranded outside
+ * the box it is supposed to sit in.
+ */
+function flash(kind, message, extra = '') {
   if (!message) return '';
-  return `<p class="flash flash-${esc(kind)}" role="status">${esc(message)}</p>`;
+  return `<div class="flash flash-${esc(kind)}" role="status"><span>${esc(message)}</span>${extra}</div>`;
 }
 
 /** Balance styled by direction: owed (positive), credit (negative), settled. */
@@ -110,12 +129,12 @@ function loginPage({ error, nextUrl }) {
     <button class="primary" type="submit">Log in</button>
   </form>
 </div>`;
-  return layout({ title: config.siteTitle + ' - Log in', body });
+  return layout({ title: config.siteTitle + ' - Log in', body, installable: true });
 }
 
 /* --------------------------------------------------------------- admin home */
 
-function homePage({ people, notice, error }) {
+function homePage({ people, archivedCount, notice, error }) {
   const net = people.reduce((sum, p) => sum + p.balance, 0);
   const owedTotal = people.reduce((sum, p) => sum + (p.balance > 0 ? p.balance : 0), 0);
 
@@ -128,6 +147,10 @@ function homePage({ people, notice, error }) {
           <span class="amount ${balanceClass(p.balance)}">${esc(formatCents(p.balance))}</span>
         </a>
       </li>`).join('')}</ul>`;
+
+  const archivedLink = archivedCount > 0
+    ? `<p class="archived-link"><a href="/archived">Archived (${archivedCount})</a></p>`
+    : '';
 
   const body = `
 ${flash('notice', notice)}
@@ -146,15 +169,54 @@ ${rows}
            autocapitalize="words" autocomplete="off" enterkeyhint="done" maxlength="80">
     <button class="primary" type="submit">Add</button>
   </div>
-</form>`;
+</form>
 
-  return layout({ title: config.siteTitle, body, chrome: true });
+${archivedLink}
+<p class="archived-link"><a href="/export.db">Download database backup</a></p>`;
+
+  return layout({ title: config.siteTitle, body, chrome: true, installable: true });
+}
+
+/* ------------------------------------------------------------ archived list */
+
+function archivedPage({ people, notice, error }) {
+  const total = people.reduce((sum, p) => sum + p.balance, 0);
+
+  const rows = people.length === 0
+    ? '<p class="empty">Nobody is archived.</p>'
+    : `<ul class="people">${people.map((p) => `
+      <li>
+        <a href="/p/${p.id}">
+          <span class="person-name">${esc(p.name)}</span>
+          <span class="amount ${balanceClass(p.balance)}">${esc(formatCents(p.balance))}</span>
+        </a>
+      </li>`).join('')}</ul>`;
+
+  const body = `
+<p class="back"><a href="/">&larr; All people</a></p>
+${flash('notice', notice)}
+${flash('error', error)}
+<section class="headline">
+  <h1>Archived</h1>
+  <p class="headline-sub">Hidden from the main list and left out of its totals.
+     Their share links still work.</p>
+</section>
+${people.length ? `<section class="totals">
+  <div><span class="totals-label">Archived balance</span><span class="amount ${balanceClass(total)}">${esc(formatCents(total))}</span></div>
+</section>` : ''}
+${rows}`;
+
+  return layout({ title: 'Archived - ' + config.siteTitle, body, chrome: true, installable: true });
 }
 
 /* ------------------------------------------------------------ person detail */
 
-function personPage({ person, entries, balance, shareUrl, notice, error }) {
+function personPage({
+  person, entries, balance, shareUrl, chargeSuggestions, paymentSuggestions,
+  notice, error, undoEntryId,
+}) {
   const newest = entries.slice().reverse();
+  const archived = Boolean(person.archived_at);
 
   const history = newest.length === 0
     ? '<p class="empty">No entries yet.</p>'
@@ -167,31 +229,46 @@ function personPage({ person, entries, balance, shareUrl, notice, error }) {
         <div class="entry-meta">
           <time datetime="${esc(isoDate(e.created_at))}">${esc(formatDate(e.created_at))}</time>
           <span class="running">balance ${esc(formatCents(e.running_balance))}</span>
-          <form method="post" action="/p/${person.id}/entries/${e.id}/delete" class="inline-form"
-                data-confirm="Delete this entry?">
+          <a class="entry-action" href="/p/${person.id}/entries/${e.id}/edit">Edit</a>
+          <form method="post" action="/p/${person.id}/entries/${e.id}/delete" class="inline-form">
             <button class="linkish danger" type="submit">Delete</button>
           </form>
         </div>
       </li>`).join('')}</ul>`;
 
+  // Deleting is a soft delete, so the flash can offer the row straight back
+  // rather than making a mis-tap permanent.
+  const undo = undoEntryId
+    ? ` <form method="post" action="/p/${person.id}/entries/${undoEntryId}/restore" class="inline-form">
+        <button class="linkish" type="submit">Undo</button>
+      </form>`
+    : '';
+
+  const settle = balance > 0 ? `
+<form method="post" action="/p/${person.id}/settle" class="settle-form"
+      data-confirm="Record a ${esc(formatCents(balance))} payment and clear this tab?">
+  <button class="secondary settle" type="submit">Settle up &mdash; record ${esc(formatCents(balance))}</button>
+</form>` : '';
+
   const body = `
-<p class="back"><a href="/">&larr; All people</a></p>
-${flash('notice', notice)}
+<p class="back"><a href="${archived ? '/archived' : '/'}">&larr; ${archived ? 'Archived' : 'All people'}</a></p>
+${flash('notice', notice, undo)}
 ${flash('error', error)}
 
 <section class="headline">
-  <h1>${esc(person.name)}</h1>
+  <h1>${esc(person.name)}${archived ? ' <span class="badge">archived</span>' : ''}</h1>
   <p class="amount big ${balanceClass(balance)}">${esc(formatCents(balance))}</p>
   <p class="headline-sub">${balance > 0 ? 'owes you' : balance < 0 ? 'you owe them' : 'settled up'}</p>
 </section>
+
+${settle}
 
 <form class="card entry-form" method="post" action="/p/${person.id}/entries">
   <input type="hidden" name="kind" value="charge">
   <h2>Add charge</h2>
   <div class="row">
     ${amountInput('charge-amount', true)}
-    <input name="description" type="text" placeholder="What for?" maxlength="200"
-           autocapitalize="sentences" autocomplete="off" enterkeyhint="done">
+    ${descriptionInput('What for?', 'charge-history')}
   </div>
   <button class="primary" type="submit">Add charge</button>
 </form>
@@ -201,17 +278,21 @@ ${flash('error', error)}
   <h2>Record payment</h2>
   <div class="row">
     ${amountInput('payment-amount', false)}
-    <input name="description" type="text" placeholder="Note (optional)" maxlength="200"
-           autocapitalize="sentences" autocomplete="off" enterkeyhint="done">
+    ${descriptionInput('Note (optional)', 'payment-history')}
   </div>
   <button class="secondary" type="submit">Record payment</button>
 </form>
+
+${datalist('charge-history', chargeSuggestions)}
+${datalist('payment-history', paymentSuggestions)}
 
 <section class="card share">
   <h2>Share link</h2>
   <p class="share-url" id="share-url">${esc(shareUrl)}</p>
   <div class="row">
     <button class="primary" type="button" id="copy-btn" data-url="${esc(shareUrl)}">Copy link</button>
+    <button class="secondary" type="button" id="share-btn" hidden
+            data-url="${esc(shareUrl)}" data-name="${esc(person.name)}">Share</button>
     <a class="button secondary" href="${esc(shareUrl)}" target="_blank" rel="noopener">Open</a>
   </div>
   <form method="post" action="/p/${person.id}/token" class="inline-form"
@@ -234,17 +315,68 @@ ${flash('error', error)}
       <button class="secondary" type="submit">Save</button>
     </div>
   </form>
-  <form method="post" action="/p/${person.id}/delete" class="inline-form"
-        data-confirm="Delete this person and all their entries? This cannot be undone.">
-    <button class="linkish danger" type="submit">Delete person</button>
-  </form>
+  <div class="danger-actions">
+    <form method="post" action="/p/${person.id}/${archived ? 'unarchive' : 'archive'}" class="inline-form">
+      <button class="linkish" type="submit">${archived ? 'Unarchive' : 'Archive'}</button>
+    </form>
+    <form method="post" action="/p/${person.id}/delete" class="inline-form"
+          data-confirm="Delete this person and every entry permanently? Archive keeps the history; this does not.">
+      <button class="linkish danger" type="submit">Delete permanently</button>
+    </form>
+  </div>
 </section>`;
 
   return layout({
     title: person.name + ' - ' + config.siteTitle,
     body,
     chrome: true,
+    installable: true,
     scriptSrc: '/person.js',
+  });
+}
+
+/* -------------------------------------------------------------- entry edit */
+
+function editEntryPage({ person, entry, error }) {
+  const isPayment = entry.amount < 0;
+  const amount = centsToPlainDecimal(entry.amount);
+
+  const body = `
+<p class="back"><a href="/p/${person.id}">&larr; ${esc(person.name)}</a></p>
+${flash('error', error)}
+
+<section class="headline">
+  <h1>Edit entry</h1>
+  <p class="headline-sub">Added ${esc(formatDate(entry.created_at))}. Editing keeps that date.</p>
+</section>
+
+<form class="card entry-form" method="post" action="/p/${person.id}/entries/${entry.id}/edit">
+  <label for="edit-amount">Amount</label>
+  <div class="row">
+    <input id="edit-amount" class="amount-input" name="amount" type="text"
+           inputmode="decimal" value="${esc(amount)}" required
+           autocomplete="off" autocorrect="off" spellcheck="false" autofocus>
+  </div>
+
+  <label for="edit-description">Description</label>
+  <input id="edit-description" name="description" type="text" maxlength="200"
+         value="${esc(entry.description)}" autocapitalize="sentences" autocomplete="off">
+
+  <fieldset class="kind">
+    <legend>Type</legend>
+    <label><input type="radio" name="kind" value="charge"${isPayment ? '' : ' checked'}> Charge (they owe more)</label>
+    <label><input type="radio" name="kind" value="payment"${isPayment ? ' checked' : ''}> Payment (they paid you)</label>
+  </fieldset>
+
+  <button class="primary" type="submit">Save changes</button>
+  <a class="button secondary" href="/p/${person.id}">Cancel</a>
+</form>`;
+
+  return layout({
+    title: 'Edit entry - ' + config.siteTitle,
+    body,
+    chrome: true,
+    installable: true,
   });
 }
 
@@ -258,6 +390,19 @@ function amountInput(id, autofocus) {
            inputmode="decimal" placeholder="0.00" required
            autocomplete="off" autocorrect="off" spellcheck="false"
            enterkeyhint="next"${autofocus ? ' autofocus' : ''}>`;
+}
+
+function descriptionInput(placeholder, listId) {
+  return `<input name="description" type="text" placeholder="${esc(placeholder)}" maxlength="200"
+           list="${esc(listId)}" autocapitalize="sentences" autocomplete="off" enterkeyhint="done">`;
+}
+
+/** Past descriptions, so a repeat charge is a tap instead of retyping. */
+function datalist(id, values) {
+  if (!values || values.length === 0) return '';
+  return `<datalist id="${esc(id)}">${
+    values.map((v) => `<option value="${esc(v)}"></option>`).join('')
+  }</datalist>`;
 }
 
 /* --------------------------------------------------------------- share page */
@@ -364,7 +509,9 @@ module.exports = {
   formatDate,
   loginPage,
   homePage,
+  archivedPage,
   personPage,
+  editEntryPage,
   sharePage,
   paymentLinks,
   notFoundPage,
