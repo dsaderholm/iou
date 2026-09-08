@@ -10,7 +10,8 @@
     "dev": "node --env-file-if-exists=.env --watch src/server.js",
     "hash-password": "node scripts/hash-password.js",
     "test": "node --test \"test/**/*.test.js\"",
-    "icons": "node scripts/make-icons.js"
+    "icons": "node scripts/make-icons.js",
+    "demo": "node scripts/make-demo.js"
   },
   "engines": {
     "node": ">=20"
