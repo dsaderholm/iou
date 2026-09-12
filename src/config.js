@@ -35,6 +35,48 @@ function resolveSessionSecret() {
   }
 }
 
+/**
+ * setInterval stores its delay as a signed 32-bit millisecond count. Anything
+ * longer -- or NaN -- is silently replaced with 1 ms, which would turn a
+ * scheduled backup into a full database copy every millisecond. 596 hours is
+ * the longest interval that fits.
+ */
+const MAX_TIMER_HOURS = Math.floor(2147483647 / (60 * 60 * 1000));
+
+/**
+ * Read a whole-number setting. A value that is not a whole number in range is
+ * reported and replaced with the default, rather than passed through as NaN:
+ * Math.max(1, NaN) is NaN, so a clamp alone does not protect anything.
+ */
+function envInteger(name, fallback, min, max) {
+  const raw = process.env[name];
+  if (raw === undefined || String(raw).trim() === '') return fallback;
+  const n = Number(String(raw).trim());
+  if (!Number.isInteger(n) || n < min || n > max) {
+    console.warn(`[iou] ignoring ${name}=${JSON.stringify(raw)}: expected a whole number`
+      + ` from ${min} to ${max}. Using ${fallback}.`);
+    return fallback;
+  }
+  return n;
+}
+
+/**
+ * How many reverse proxies sit in front of the app. Express takes the client
+ * address from X-Forwarded-For, and "true" means trusting every entry in it --
+ * including the left-most, which the client writes itself. That let anyone
+ * choose their own IP, walk straight past the per-IP login limit, and exhaust
+ * the global one to lock the owner out. A hop count takes the address the
+ * nearest trusted proxy appended, which a client cannot forge.
+ */
+function parseTrustProxy(raw) {
+  const v = raw === undefined ? '' : String(raw).trim();
+  if (v === '') return 1;
+  if (v === 'false') return false;
+  if (v === 'true') return true;
+  if (/^\d+$/.test(v)) return Number(v);
+  return v; // an address, a subnet list, or an Express keyword like "loopback"
+}
+
 /** Strip a handle down to the bare username the payment URLs expect. */
 function cleanHandle(raw, ...stripPrefixes) {
   let v = (raw || '').trim();
@@ -59,7 +101,7 @@ const config = {
   // A year. The threat this cookie defends against is someone holding your
   // unlocked phone, which a shorter window does not change; all a 30 day
   // window bought was a long password typed on a phone keyboard every month.
-  sessionTtlSeconds: Number(process.env.SESSION_TTL_SECONDS || 60 * 60 * 24 * 365),
+  sessionTtlSeconds: envInteger('SESSION_TTL_SECONDS', 60 * 60 * 24 * 365, 60, 60 * 60 * 24 * 3650),
   cookieName: process.env.COOKIE_NAME || 'iou_session',
   siteTitle: process.env.SITE_TITLE || 'IOU',
   // Who the money is owed to. Shown on the share page next to the payment links.
@@ -71,8 +113,10 @@ const config = {
   // Automatic backups into DATA_DIR/backups. One runs at boot, which makes
   // every container restart -- and so every upgrade -- take a snapshot first.
   backupEnabled: (process.env.BACKUP_ENABLED || 'true') !== 'false',
-  backupKeep: Math.max(1, Number(process.env.BACKUP_KEEP || 14)),
-  backupIntervalHours: Math.max(1, Number(process.env.BACKUP_INTERVAL_HOURS || 24)),
+  backupKeep: envInteger('BACKUP_KEEP', 14, 1, 3650),
+  backupIntervalHours: envInteger('BACKUP_INTERVAL_HOURS', 24, 1, MAX_TIMER_HOURS),
+
+  trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
 
   venmoHandle: cleanHandle(process.env.VENMO_HANDLE, 'venmo.com/', 'www.venmo.com/'),
   paypalMe: cleanHandle(process.env.PAYPAL_ME, 'paypal.me/', 'www.paypal.me/', 'paypal.com/paypalme/'),
@@ -80,3 +124,5 @@ const config = {
 };
 
 module.exports = config;
+module.exports.parseTrustProxy = parseTrustProxy;
+module.exports.MAX_TIMER_HOURS = MAX_TIMER_HOURS;

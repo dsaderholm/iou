@@ -180,9 +180,19 @@ ${rows}
 </form>
 
 ${archivedLink}
-<p class="archived-link"><a href="/export.db">Download database backup</a></p>`;
+<p class="archived-link"><a href="/export.db">Download database backup</a></p>
+<form method="post" action="/logout-all" class="archived-link"
+      data-confirm="Log out every device, including this one?">
+  <button class="linkish" type="submit">Log out of all devices</button>
+</form>`;
 
-  return layout({ title: config.siteTitle, body, chrome: true, installable: true });
+  return layout({
+    title: config.siteTitle,
+    body,
+    chrome: true,
+    installable: true,
+    scriptSrc: '/person.js',
+  });
 }
 
 /* ---------------------------------------------------------------- activity */

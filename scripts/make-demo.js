@@ -70,7 +70,7 @@ const SCREENS = [
   { key: 'undo', route: '/p/1?m=entry_deleted&undo=3', name: 'After a delete',
     note: 'Delete is soft, so the notice can hand the row straight back.' },
   { key: 'edit', route: '/p/1/entries/2/edit', name: 'Fixing a mistake',
-    note: 'Amount, wording, or direction. The original date stays put.' },
+    note: 'Amount, wording, direction, or the day it happened. History re-sorts by date.' },
   { key: 'activity', route: '/activity', name: 'Everything recent',
     note: 'Across everyone, newest first. The only view that catches a charge on the wrong tab.' },
   { key: 'archived', route: '/archived', name: 'Archived',

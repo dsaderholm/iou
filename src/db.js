@@ -10,11 +10,21 @@ const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, 'iou.db');
 
 let db;
 
-function init() {
+/**
+ * Open the database file without touching its schema. Split from ensureSchema
+ * so startup can take a backup in between: a snapshot meant to survive a bad
+ * upgrade has to be taken before the new code's migrations run, not after.
+ */
+function open() {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   db = new Database(DB_PATH);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  return db;
+}
+
+/** Create any missing tables and apply migrations. Safe to run on every boot. */
+function ensureSchema() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS people (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,8 +42,25 @@ function init() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_entries_person ON entries(person_id, id);
+
+    -- One row per login, so a session can be revoked. The cookie on its own is
+    -- a signed bearer token, and a signature cannot be un-signed: without this
+    -- table, "Log out" only forgets the cookie in one browser while any copy of
+    -- it keeps working until it expires.
+    CREATE TABLE IF NOT EXISTS sessions (
+      id          TEXT    PRIMARY KEY,
+      created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+      expires_at  INTEGER NOT NULL,
+      revoked_at  TEXT
+    );
   `);
   migrate();
+}
+
+/** Open and prepare in one step, for tests and scripts that need no backup. */
+function init() {
+  open();
+  ensureSchema();
   return db;
 }
 
@@ -51,6 +78,8 @@ function migrate() {
   addColumnIfMissing('entries', 'deleted_at', 'TEXT');
   // Archive: tidies someone off the list without destroying their history.
   addColumnIfMissing('people', 'archived_at', 'TEXT');
+  // History is ordered by date now that an entry's date can be edited.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_entries_person_date ON entries(person_id, created_at, id)');
 }
 
 /** A 16-character URL-safe token. 12 random bytes -> exactly 16 base64url chars. */
@@ -174,13 +203,19 @@ function getBalance(personId) {
  * Live entries for one person, oldest first, each carrying the running balance
  * as of that entry. Callers wanting newest-first reverse the result; the
  * running total has to accumulate in chronological order either way.
+ *
+ * Ordered by date, then id to break ties within one second. Ordering by id
+ * alone was only right while dates could not change: once an entry can move to
+ * an earlier day, insertion order and date order disagree, the history reads
+ * out of order, and each row's running balance stops describing the date
+ * printed beside it.
  */
 function listEntries(personId) {
   const rows = db.prepare(`
     SELECT id, amount, description, created_at
     FROM entries
     WHERE person_id = ? AND deleted_at IS NULL
-    ORDER BY id ASC
+    ORDER BY created_at ASC, id ASC
   `).all(personId);
   let running = 0;
   for (const row of rows) {
@@ -265,15 +300,46 @@ function recentActivity(limit = 100) {
     FROM entries e
     JOIN people p ON p.id = e.person_id
     WHERE e.deleted_at IS NULL
-    ORDER BY e.id DESC
+    ORDER BY e.created_at DESC, e.id DESC
     LIMIT ?
   `).all(limit);
 }
 
-/** Cheap liveness probe: proves the file is open and readable, not just that
- *  the process is up. */
+/**
+ * Liveness probe. Reads the schema table, so it touches a real page of the file
+ * rather than evaluating a constant. It cannot tell a missing volume from a
+ * first install -- both are an empty directory -- which is why startup
+ * announces a newly created database rather than this pretending to know.
+ */
 function ping() {
-  return db.prepare('SELECT 1 AS ok').get().ok === 1;
+  return db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'table'").get().n > 0;
+}
+
+/* ----------------------------------------------------------------- sessions */
+
+function createSession(id, expiresAt) {
+  // Housekeeping on the way in: nothing ever reads an expired row again.
+  db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(Math.floor(Date.now() / 1000));
+  db.prepare('INSERT INTO sessions (id, expires_at) VALUES (?, ?)').run(id, expiresAt);
+}
+
+function sessionIsActive(id) {
+  return Boolean(db.prepare(`
+    SELECT 1 FROM sessions
+    WHERE id = ? AND revoked_at IS NULL AND expires_at > ?
+  `).get(id, Math.floor(Date.now() / 1000)));
+}
+
+function revokeSession(id) {
+  return db.prepare(
+    "UPDATE sessions SET revoked_at = datetime('now') WHERE id = ? AND revoked_at IS NULL"
+  ).run(id).changes;
+}
+
+function revokeAllSessions() {
+  return db.prepare(
+    "UPDATE sessions SET revoked_at = datetime('now') WHERE revoked_at IS NULL"
+  ).run().changes;
 }
 
 /** Every live entry, joined to its person, for CSV export. */
@@ -284,7 +350,7 @@ function allEntriesForExport() {
     FROM entries e
     JOIN people p ON p.id = e.person_id
     WHERE e.deleted_at IS NULL
-    ORDER BY p.name COLLATE NOCASE ASC, e.id ASC
+    ORDER BY p.name COLLATE NOCASE ASC, e.created_at ASC, e.id ASC
   `).all();
 }
 
@@ -299,6 +365,8 @@ function backupTo(destination) {
 
 module.exports = {
   init,
+  open,
+  ensureSchema,
   migrate,
   get handle() { return db; },
   DB_PATH,
@@ -324,6 +392,10 @@ module.exports = {
   regenerateToken,
   recentActivity,
   ping,
+  createSession,
+  sessionIsActive,
+  revokeSession,
+  revokeAllSessions,
   allEntriesForExport,
   backupTo,
 };

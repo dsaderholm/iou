@@ -18,10 +18,11 @@ const backup = require('./backup');
 const app = express();
 
 // The reverse proxy in front of this app terminates TLS, so X-Forwarded-Proto
-// is what tells us whether to mark the cookie Secure. It decides transport
-// only. Nothing about identity is ever read from a proxy header.
-const TRUST_PROXY = process.env.TRUST_PROXY || 'true';
-app.set('trust proxy', TRUST_PROXY === 'false' ? false : TRUST_PROXY === 'true' ? true : TRUST_PROXY);
+// is what tells us whether to mark the cookie Secure. Login identity is never
+// read from a proxy header. The client address used for login throttling is,
+// which is why this trusts a fixed number of proxy hops rather than every
+// entry: see parseTrustProxy in config.js.
+app.set('trust proxy', config.trustProxy);
 app.set('x-powered-by', false);
 app.set('etag', false);
 
@@ -56,8 +57,11 @@ const ERRORS = {
   bad_date: 'Use a real date, today or earlier.',
 };
 
-const notice = (req) => NOTICES[req.query.m] || '';
-const errorMsg = (req) => ERRORS[req.query.e] || '';
+// Own properties only. A plain lookup resolves ?m=constructor to the Object
+// function and ?e=__proto__ to Object.prototype, both truthy, and prints them.
+const lookup = (table, key) => (typeof key === 'string' && Object.hasOwn(table, key) ? table[key] : '');
+const notice = (req) => lookup(NOTICES, req.query.m);
+const errorMsg = (req) => lookup(ERRORS, req.query.e);
 
 /* -------------------------------------------------------------- middleware */
 
@@ -176,10 +180,11 @@ function trimName(raw) {
 /* ------------------------------------------------------------ public routes */
 
 /**
- * Liveness for the container healthcheck. It runs a real query, because the
- * failure worth catching is the database being locked, corrupt, or on a volume
- * that did not mount -- states in which Express will happily keep serving
- * static files and look perfectly healthy.
+ * Liveness for the container healthcheck. It reads the database file, so an
+ * unreadable or corrupt database reports 503 instead of the web server looking
+ * healthy on its own. It cannot detect a /data volume that failed to mount:
+ * that is indistinguishable from a first install, which is why startup logs a
+ * warning whenever it creates a new database.
  *
  * Public, because the healthcheck has no session, and it reveals nothing: no
  * counts, no names, no balances.
@@ -326,8 +331,17 @@ function pruneThrottle(now) {
   for (const [ip, record] of failuresByIp) {
     if (now - record.start > LOGIN_WINDOW_MS) failuresByIp.delete(ip);
   }
-  // Never let an attacker grow this without bound by rotating addresses.
-  if (failuresByIp.size > 10000) failuresByIp.clear();
+  // Bound the map, dropping the oldest records first. Clearing the whole map
+  // would let anyone who rotates past the cap wipe every active lockout,
+  // including the one on the address they are guessing from.
+  const excess = failuresByIp.size - 10000;
+  if (excess > 0) {
+    let dropped = 0;
+    for (const ip of failuresByIp.keys()) {
+      if (dropped++ >= excess) break;
+      failuresByIp.delete(ip);
+    }
+  }
 }
 
 function loginBlocked(req) {
@@ -390,7 +404,14 @@ app.post('/login', async (req, res) => {
   res.redirect(303, nextUrl);
 });
 
+/**
+ * Ends this session on the server, not just in this browser. Clearing the
+ * cookie alone left any copy of it valid until it expired.
+ */
 app.post('/logout', (req, res) => {
+  if (req.session && req.session.sid) {
+    try { db.revokeSession(req.session.sid); } catch { /* cookie still goes */ }
+  }
   auth.clearSessionCookie(req, res);
   res.redirect(303, '/login');
 });
@@ -553,9 +574,14 @@ function shiftedCreatedAt(currentCreatedAt, submitted) {
   const origin = Date.parse(`${currentLocal}T00:00:00Z`);
   if (Number.isNaN(target) || Number.isNaN(origin)) return false;
 
-  // No future-dating, and nothing absurd from a fat-fingered year.
-  const tomorrow = Date.now() + 36 * 60 * 60 * 1000;
-  if (target > tomorrow || target < Date.parse('2000-01-01T00:00:00Z')) return false;
+  // Date.parse rolls impossible dates forward -- 2026-02-30 becomes March 2 --
+  // so a date is only real if it survives the round trip unchanged.
+  if (new Date(target).toISOString().slice(0, 10) !== wanted) return false;
+
+  // Not after today in the server's own zone: the same "today" the date picker
+  // uses as its maximum, and the one the error message promises.
+  const today = views.localDateInputValue(new Date().toISOString().replace('T', ' ').slice(0, 19));
+  if (wanted > today || wanted < '2000-01-01') return false;
 
   const shifted = new Date(Date.parse(`${currentCreatedAt.replace(' ', 'T')}Z`) + (target - origin));
   if (Number.isNaN(shifted.getTime())) return false;
@@ -624,6 +650,13 @@ app.post('/p/:id/delete', (req, res) => {
   res.redirect(303, '/?m=person_deleted');
 });
 
+/** For a lost phone or a browser you no longer control. */
+app.post('/logout-all', (req, res) => {
+  db.revokeAllSessions();
+  auth.clearSessionCookie(req, res);
+  res.redirect(303, '/login');
+});
+
 app.get('/export.csv', (req, res) => {
   const stamp = new Date().toISOString().slice(0, 10);
   res.status(200)
@@ -671,7 +704,7 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 
 /* ------------------------------------------------------------------- start */
 
-function start() {
+async function start() {
   if (!config.adminUser) {
     console.error('[iou] refusing to start: ADMIN_USER is not set.');
     process.exit(1);
@@ -706,7 +739,35 @@ function start() {
     process.exit(1);
   }
 
-  db.init();
+  // Order matters here. The snapshot that exists to survive a bad upgrade has
+  // to be taken before this version's migrations run. Opening the file,
+  // backing it up, and only then applying the schema is what makes the
+  // "pre-upgrade" backup mean what it says.
+  const existed = fs.existsSync(db.DB_PATH);
+  db.open();
+
+  if (existed && config.backupEnabled) {
+    try {
+      const { file } = await backup.runOnce('pre-upgrade');
+      console.log(`[iou] backup ${path.basename(file)} taken before migrations`);
+    } catch (err) {
+      // Keep starting: current migrations only add columns, and refusing to
+      // boot on a full disk would take the whole app down over a backup.
+      console.error(`[iou] pre-upgrade backup FAILED, migrating anyway: ${err.message}`);
+    }
+  }
+
+  db.ensureSchema();
+
+  if (!existed) {
+    // A missing volume and a first install look identical from inside the
+    // container: an empty directory. Nothing can tell them apart, so say it
+    // plainly where it will be seen instead of reporting healthy in silence.
+    console.warn(`[iou] created a NEW, EMPTY database at ${db.DB_PATH}.`);
+    console.warn('[iou] Expected on a first install. If this instance already had data,');
+    console.warn('[iou] the /data volume is not mounted: stop before adding entries.');
+  }
+
   const server = app.listen(config.port, () => {
     console.log(`[iou] listening on :${config.port}  db=${db.DB_PATH}`);
     if (config.apiToken) console.log('[iou] JSON summary enabled at /api/summary.json');
@@ -720,6 +781,11 @@ function start() {
   }
 }
 
-if (require.main === module) start();
+if (require.main === module) {
+  start().catch((err) => {
+    console.error('[iou] failed to start:', err);
+    process.exit(1);
+  });
+}
 
 module.exports = { app, start };

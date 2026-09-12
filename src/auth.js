@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const bcrypt = require('bcryptjs');
 const config = require('./config');
+const db = require('./db');
 
 const COOKIE = config.cookieName;
 
@@ -35,9 +36,16 @@ function sign(payloadB64) {
     .update(payloadB64).digest('base64url');
 }
 
+/**
+ * Issue a session. The token is still a signed cookie, but it now names a row
+ * in the sessions table, which is what lets logging out actually end it.
+ */
 function makeToken(username) {
   const now = Math.floor(Date.now() / 1000);
-  const payload = { u: username, iat: now, exp: now + config.sessionTtlSeconds };
+  const exp = now + config.sessionTtlSeconds;
+  const sid = crypto.randomBytes(18).toString('base64url');
+  db.createSession(sid, exp);
+  const payload = { u: username, sid, iat: now, exp };
   const body = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
   return body + '.' + sign(body);
 }
@@ -67,6 +75,18 @@ function verifyToken(token) {
   // A session is only valid for the currently configured admin, so rotating
   // ADMIN_USER invalidates every outstanding cookie.
   if (payload.u !== config.adminUser) return null;
+
+  // The signature proves the cookie was issued here; only the table says it has
+  // not been revoked since. Checked last, so a forged or expired cookie never
+  // costs a query. Tokens from before sessions were tracked carry no sid and
+  // are refused, which logs everyone in once more rather than honouring a
+  // cookie nothing can revoke.
+  if (typeof payload.sid !== 'string' || !payload.sid) return null;
+  try {
+    if (!db.sessionIsActive(payload.sid)) return null;
+  } catch {
+    return null; // an unreadable database is not a reason to trust a cookie
+  }
   return payload;
 }
 

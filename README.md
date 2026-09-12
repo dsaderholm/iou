@@ -79,13 +79,13 @@ the published image, so swap `image:` for `build: .` if you want a local build.
 | `PUBLIC_BASE_URL` | no | from request | The address people actually use, e.g. `https://iou.example.com`. Only needed if your proxy rewrites `Host`. |
 | `API_TOKEN` | no | — | Enables read-only JSON at `/api/summary.json`. Blank means the route does not exist. Treat it as a password. |
 | `BACKUP_ENABLED` | no | `true` | Write a backup into `/data/backups` at every start, then daily. |
-| `BACKUP_KEEP` | no | `14` | How many backups to keep. |
-| `BACKUP_INTERVAL_HOURS` | no | `24` | How often to take one after the first. |
+| `BACKUP_KEEP` | no | `14` | How many **days** of backups to keep, one per day. The newest three files are kept as well, whatever day they are from. |
+| `BACKUP_INTERVAL_HOURS` | no | `24` | How often to take one. Whole hours, at most 596 -- the longest delay a timer can hold. An unusable value is ignored with a warning rather than quietly running backups every millisecond. |
 | `TZ` | no | `UTC` | Timestamps are stored in UTC and displayed in this zone. |
 | `PORT` | no | `3000` | Port inside the container. |
 | `DATA_DIR` | no | `/data` | Where the database and generated secret live. |
 | `SESSION_TTL_SECONDS` | no | 1 year | How long a login lasts. Long on purpose: the phone's own lock screen is the real guard, and a shorter window only means retyping a long password. |
-| `TRUST_PROXY` | no | `true` | Passed to Express `trust proxy`. Set `false` if not behind a proxy. |
+| `TRUST_PROXY` | no | `1` | How many reverse proxies are in front of the app. Use `2` for, say, Cloudflare in front of nginx, and `false` with no proxy at all. Avoid `true`: it trusts the left-most `X-Forwarded-For` entry, which the client writes itself, so anyone could pick their own IP and slip past the login throttle. |
 
 Payment handles accept a bare handle or a full profile URL; the extra parts are
 trimmed off.
@@ -120,7 +120,7 @@ rounded, so a typo is visible instead of silent. The form decides the sign, not
 the text you type.
 
 **Mistakes are recoverable.** *Edit* changes an entry's amount, description,
-direction or date, keeping its position in the history. *Delete* is a soft
+direction or date. History is ordered by date, so a backdated entry moves to where it belongs and the running balance beside it is correct for that day. *Delete* is a soft
 delete, and the notice that follows offers **Undo** — a mis-tap on a phone costs
 nothing.
 
@@ -149,14 +149,30 @@ SQLite file, share tokens included, which the CSV cannot do.
 
 ## Health, backups, and integrations
 
-`GET /healthz` runs a real query and returns `{"status":"ok","database":"ok"}`,
-or `503` if the database is locked, corrupt, or on a volume that did not mount.
-The container healthcheck uses it. It needs no session and reveals nothing —
-no names, balances, or counts.
+`GET /healthz` reads the database file and returns `{"status":"ok","database":"ok"}`,
+or `503` if it cannot. The container healthcheck uses it. It needs no session and
+reveals nothing — no names, balances, or counts.
+
+What it **cannot** catch is a `/data` volume that failed to mount. From inside
+the container that looks exactly like a first install: an empty directory. So
+whenever the app has to create a brand-new database it says so in the log:
+
+```
+[iou] created a NEW, EMPTY database at /data/iou.db.
+[iou] Expected on a first install. If this instance already had data,
+[iou] the /data volume is not mounted: stop before adding entries.
+```
+
+If you see that on an instance that already had data, stop it before adding
+anything — the real database is still sitting on the host, unmounted.
 
 Backups are automatic. One is written to `/data/backups` at every start, so
-every upgrade snapshots before the new code touches anything, then once a day,
-keeping the newest `BACKUP_KEEP`. They go through SQLite's backup API, so they
+every upgrade snapshots before the new code touches anything, then once a day.
+The startup snapshot is taken after opening the database and **before** any
+migration runs, and is named `…-pre-upgrade.db`. Retention is by day: each day
+keeps its newest backup, the newest `BACKUP_KEEP` days are kept, and the three
+newest files are kept regardless, so restarting a dozen times in an afternoon
+cannot push out last week's backups. They go through SQLite's backup API, so they
 are consistent even mid-write. *Download database backup* on the home page
 still gives you one on demand.
 
@@ -211,6 +227,14 @@ account sync.
 
 The link is a bearer token: anyone holding it can read that page. **Regenerate
 link** on the person's page issues a new one and kills the old immediately.
+
+## Sessions
+
+A login lasts a year, because on a phone the lock screen is the real guard. The
+cookie names a session stored on the server, so **Log out** ends that session
+everywhere a copy of the cookie might be, not just in the browser you tapped it
+in. **Log out of all devices**, at the bottom of the home page, ends every
+session at once — the thing to use for a lost phone.
 
 ## Behind a reverse proxy
 
