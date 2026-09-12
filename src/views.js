@@ -1,6 +1,7 @@
 'use strict';
 
 const config = require('./config');
+const db = require('./db');
 const { formatCents, centsToPlainDecimal } = require('./money');
 
 /* ----------------------------------------------------------------- escaping */
@@ -34,6 +35,18 @@ function formatDate(s) {
   if (!d) return '';
   const sameYear = d.getFullYear() === new Date().getFullYear();
   return sameYear ? DATE_FMT.format(d) : DATE_FMT_OLD.format(d);
+}
+
+const DAY_FMT = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+const DAY_FMT_OLD = new Intl.DateTimeFormat('en-US', {
+  month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC',
+});
+
+/** A calendar date with no time, such as Sure's "2026-09-10". Read as UTC noon so no zone moves it. */
+function formatDay(ymd) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(ymd))) return '';
+  const d = new Date(`${ymd}T12:00:00Z`);
+  return (d.getUTCFullYear() === new Date().getFullYear() ? DAY_FMT : DAY_FMT_OLD).format(d);
 }
 
 function isoDate(s) {
@@ -86,10 +99,25 @@ ${body}
 </html>`;
 }
 
+/** How many Sure items want a decision; 0 when the integration is off. */
+function sureAttention() {
+  if (!config.sureEnabled) return 0;
+  try {
+    return db.sureAttentionCount();
+  } catch {
+    return 0;
+  }
+}
+
 function adminHeader() {
+  const waiting = sureAttention();
+  const sureLink = config.sureEnabled
+    ? `<a href="/sure">From Sure${waiting ? ` <span class="count">${waiting}</span>` : ''}</a>`
+    : '';
   return `<header class="bar">
   <a class="bar-home" href="/">${esc(config.siteTitle)}</a>
   <nav>
+    ${sureLink}
     <a href="/activity">Activity</a>
     <a href="/export.csv">CSV</a>
     <form method="post" action="/logout"><button class="linkish" type="submit">Log out</button></form>
@@ -160,9 +188,15 @@ function homePage({ people, archived, notice, error }) {
   </p>`
     : '';
 
+  const waiting = sureAttention();
+  const sureNotice = waiting
+    ? `<p class="sure-callout"><a href="/sure">${waiting} from Sure to review</a></p>`
+    : '';
+
   const body = `
 ${flash('notice', notice)}
 ${flash('error', error)}
+${sureNotice}
 <section class="totals">
   <div><span class="totals-label">Owed to you</span><span class="amount owed">${esc(formatCents(owedTotal))}</span></div>
   <div><span class="totals-label">Net</span><span class="amount ${balanceClass(net)}">${esc(formatCents(net))}</span></div>
@@ -232,6 +266,175 @@ ${rows}`;
   return layout({ title: 'Activity - ' + config.siteTitle, body, chrome: true, installable: true });
 }
 
+/* --------------------------------------------------------------- sure inbox */
+
+/**
+ * The review inbox. Every string that came from Sure -- names, notes, merchants,
+ * account names, error text -- is escaped like any other untrusted input.
+ */
+function surePage({ pending, changed, gone, people, status, category, autoAdd, notice, error }) {
+  const activePeople = people.filter((p) => !p.archived_at);
+  const archivedPeople = people.filter((p) => p.archived_at);
+  const personOptions = (selectedId) => [
+    '<option value="">Choose…</option>',
+    ...activePeople.map((p) => `<option value="${p.id}"${p.id === selectedId ? ' selected' : ''}>${esc(p.name)}</option>`),
+    ...(archivedPeople.length ? ['<optgroup label="Archived">',
+      ...archivedPeople.map((p) => `<option value="${p.id}"${p.id === selectedId ? ' selected' : ''}>${esc(p.name)}</option>`),
+      '</optgroup>'] : []),
+  ].join('');
+
+  const direction = (cents) => (cents < 0
+    ? { label: 'They paid you', cls: 'credit' }
+    : { label: 'They owe you', cls: 'owed' });
+
+  const matchNote = (item) => {
+    if (item.suggested_person_id && item.suggestion_confident) return `Matched ${esc(item.suggested_name)} by full name.`;
+    if (item.suggested_person_id) return `Best guess from a first name: ${esc(item.suggested_name)}. Check before adding.`;
+    return 'No name matched. Pick who owes it, or add them.';
+  };
+
+  const pendingCards = pending.length === 0
+    ? '<p class="empty">Nothing waiting.</p>'
+    : pending.map((item) => {
+      const dir = direction(item.amount_cents);
+      const what = [item.name, item.notes].filter(Boolean).map(esc).join(' &middot; ');
+      const suggestedDesc = (item.merchant || item.name || 'From Sure').slice(0, 200);
+      return `
+<article class="card sure-item">
+  <div class="sure-head">
+    <span class="sure-dir ${dir.cls}">${dir.label}</span>
+    <span class="amount ${dir.cls}">${esc(formatCents(Math.abs(item.amount_cents)))}</span>
+  </div>
+  <p class="sure-meta">${esc(formatDay(item.date))}${item.account ? ` &middot; ${esc(item.account)}` : ''}</p>
+  ${what ? `<p class="sure-what">${what}</p>` : ''}
+  <p class="sure-match">${matchNote(item)}</p>
+  <form method="post" action="/sure/items/${esc(item.sure_id)}/add" class="sure-form">
+    <label for="who-${esc(item.sure_id)}">Who</label>
+    <div class="row">
+      <select id="who-${esc(item.sure_id)}" name="person_id">${personOptions(item.suggested_person_id)}</select>
+      <input name="new_person" type="text" placeholder="or someone new" maxlength="80"
+             autocapitalize="words" autocomplete="off">
+    </div>
+    <div class="row">
+      <input class="amount-input" name="amount" type="text" inputmode="decimal"
+             value="${esc(centsToPlainDecimal(item.amount_cents))}" autocomplete="off" aria-label="Amount">
+      <input name="description" type="text" maxlength="200" value="${esc(suggestedDesc)}"
+             autocomplete="off" aria-label="Description">
+    </div>
+    <button class="primary" type="submit">Add to tab</button>
+  </form>
+  <form method="post" action="/sure/items/${esc(item.sure_id)}/dismiss" class="inline-form"
+        data-confirm="Dismiss this? It will not come back from Sure.">
+    <button class="linkish danger" type="submit">Dismiss</button>
+  </form>
+</article>`;
+    }).join('');
+
+  const changedCards = changed.map((item) => {
+    // Was the whole transaction added, or a share of it? Sure only ever knows
+    // the total, so a share has to be carried forward rather than replaced.
+    const oldTotal = Math.abs(Number(String(item.added_fingerprint).split('|')[0]));
+    const onTab = Math.abs(item.entry_amount);
+    const newTotal = Math.abs(item.amount_cents);
+    const share = onTab !== oldTotal;
+    const proportional = share && oldTotal > 0 ? Math.round((onTab * newTotal) / oldTotal) : newTotal;
+
+    const explain = share
+      ? `<p>Their share on the tab is <strong>${esc(formatCents(onTab))}</strong> of what was
+           ${esc(formatCents(oldTotal))}. Sure's total is now <strong>${esc(formatCents(newTotal))}</strong>
+           on ${esc(formatDay(item.date))}.</p>`
+      : `<p>Sure now says <strong>${esc(formatCents(newTotal))}</strong> on ${esc(formatDay(item.date))}.
+           The tab has <strong>${esc(formatCents(onTab))}</strong> on ${esc(formatDate(item.entry_created_at))}.</p>`;
+
+    const accept = share
+      ? `<form method="post" action="/sure/items/${esc(item.sure_id)}/accept" class="sure-form">
+      <label for="share-${esc(item.sure_id)}">New share (the date follows Sure either way)</label>
+      <div class="row">
+        <input id="share-${esc(item.sure_id)}" class="amount-input" name="amount" type="text"
+               inputmode="decimal" value="${esc(centsToPlainDecimal(proportional))}" autocomplete="off">
+        <button class="primary" type="submit">Update share</button>
+      </div>
+    </form>`
+      : `<form method="post" action="/sure/items/${esc(item.sure_id)}/accept" class="inline-form">
+      <button class="primary" type="submit">Use Sure's</button>
+    </form>`;
+
+    return `
+<article class="card sure-item sure-flag">
+  <p class="sure-what"><a href="/p/${item.person_id}">${esc(item.person_name)}</a> &middot; ${esc(item.entry_description || 'Entry')}</p>
+  ${explain}
+  ${accept}
+  <div class="row sure-actions">
+    <form method="post" action="/sure/items/${esc(item.sure_id)}/keep" class="inline-form">
+      <button class="secondary" type="submit">Keep the tab's</button>
+    </form>
+  </div>
+</article>`;
+  }).join('');
+
+  const goneCards = gone.map((item) => `
+<article class="card sure-item sure-flag">
+  <p class="sure-what"><a href="/p/${item.person_id}">${esc(item.person_name)}</a> &middot; ${esc(item.entry_description || 'Entry')}
+     &middot; ${esc(formatCents(Math.abs(item.entry_amount)))}</p>
+  <p>No longer in <em>${esc(category)}</em> in Sure. It was deleted, moved to another category, or
+     its split was edited, which gives the parts new ids.</p>
+  <div class="row sure-actions">
+    <form method="post" action="/sure/items/${esc(item.sure_id)}/remove" class="inline-form"
+          data-confirm="Take this off ${esc(item.person_name)}'s tab?">
+      <button class="primary" type="submit">Remove from tab</button>
+    </form>
+    <form method="post" action="/sure/items/${esc(item.sure_id)}/keep-gone" class="inline-form">
+      <button class="secondary" type="submit">Keep it</button>
+    </form>
+  </div>
+</article>`).join('');
+
+  const checked = status.lastSuccessAt
+    ? `Last checked ${esc(DATE_FMT.format(status.lastSuccessAt))}.`
+    : 'Not checked yet since the app started.';
+  const failure = status.lastError
+    ? `<div class="flash flash-error" role="alert"><span>Sure sync failed: ${esc(status.lastError)}</span></div>`
+    : '';
+
+  const body = `
+<p class="back"><a href="/">&larr; All people</a></p>
+${flash('notice', notice)}
+${flash('error', error)}
+${failure}
+<section class="headline">
+  <h1>From Sure</h1>
+  <p class="headline-sub">Transactions in <em>${esc(category)}</em>.
+    ${autoAdd ? 'Exact full-name matches are added automatically; the rest wait here.'
+              : 'Nothing reaches a balance until you add it.'}</p>
+</section>
+
+<div class="row sure-status">
+  <p class="sure-meta">${checked}</p>
+  <form method="post" action="/sure/sync" class="inline-form">
+    <button class="secondary" type="submit">Check Sure now</button>
+  </form>
+</div>
+
+<section class="history">
+  <h2>Needs review (${pending.length})</h2>
+  ${pendingCards}
+</section>
+
+${changed.length ? `<section class="history"><h2>Changed in Sure (${changed.length})</h2>${changedCards}</section>` : ''}
+${gone.length ? `<section class="history"><h2>No longer in Sure (${gone.length})</h2>${goneCards}</section>` : ''}
+
+<p class="fineprint">If a repayment reaches you through Sure, add it from here rather than
+  also tapping Record payment, or it will count twice.</p>`;
+
+  return layout({
+    title: 'From Sure - ' + config.siteTitle,
+    body,
+    chrome: true,
+    installable: true,
+    scriptSrc: '/person.js',
+  });
+}
+
 /* ------------------------------------------------------------ archived list */
 
 function archivedPage({ people, notice, error }) {
@@ -268,7 +471,7 @@ ${rows}`;
 
 function personPage({
   person, entries, balance, shareUrl, chargeSuggestions, paymentSuggestions,
-  notice, error, undoEntryId,
+  notice, error, undoEntryId, sureEntryIds = new Set(),
 }) {
   const newest = entries.slice().reverse();
   const archived = Boolean(person.archived_at);
@@ -283,6 +486,7 @@ function personPage({
         </div>
         <div class="entry-meta">
           <time datetime="${esc(isoDate(e.created_at))}">${esc(formatDate(e.created_at))}</time>
+          ${sureEntryIds.has(e.id) ? '<span class="badge badge-sure" title="Added from Sure">Sure</span>' : ''}
           <span class="running">balance ${esc(formatCents(e.running_balance))}</span>
           <a class="entry-action" href="/p/${person.id}/entries/${e.id}/edit">Edit</a>
           <form method="post" action="/p/${person.id}/entries/${e.id}/delete" class="inline-form">
@@ -585,6 +789,8 @@ module.exports = {
   loginPage,
   homePage,
   activityPage,
+  surePage,
+  formatDay,
   archivedPage,
   personPage,
   editEntryPage,

@@ -368,3 +368,20 @@ test('impossible and future dates are refused', async () => {
   });
   assert.doesNotMatch(ok.headers.get('location'), /bad_date/, '2024-02-29 is a real date');
 });
+
+/* ------------------------------------------------- bodyless form posts */
+
+test('a POST with no body at all gets a normal answer, not a 500', async () => {
+  // Express 5 leaves req.body undefined without a form body, and every handler
+  // read fields off it: a bare POST /login used to throw and return 500.
+  const bare = (url, cookie) => fetch(base + url, {
+    method: 'POST', redirect: 'manual', headers: cookie ? { cookie } : {},
+  });
+
+  assert.equal((await bare('/login')).status, 401, 'no credentials is a failed login');
+
+  const cookie = await login();
+  const person = await bare('/people', cookie);
+  assert.equal(person.status, 303);
+  assert.match(person.headers.get('location'), /e=name_required/);
+});

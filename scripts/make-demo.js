@@ -28,6 +28,10 @@ process.env.CASHAPP_HANDLE = process.env.CASHAPP_HANDLE || 'djsaderholm';
 process.env.PAYPAL_ME = process.env.PAYPAL_ME || 'djsaderholm';
 process.env.PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'https://iou.example.com';
 process.env.TZ = process.env.TZ || 'America/Denver';
+// Turns the Sure inbox on for the gallery. Nothing is ever fetched: the demo
+// seeds the inbox directly and never starts the poller.
+process.env.SURE_URL = 'https://finance.example.com';
+process.env.SURE_API_KEY = 'demo-not-a-real-key';
 
 const { app } = require('../src/server');
 const db = require('../src/db');
@@ -73,6 +77,8 @@ const SCREENS = [
     note: 'Amount, wording, direction, or the day it happened. History re-sorts by date.' },
   { key: 'activity', route: '/activity', name: 'Everything recent',
     note: 'Across everyone, newest first. The only view that catches a charge on the wrong tab.' },
+  { key: 'sure', route: '/sure', name: 'From Sure',
+    note: 'Transactions from the Owed to me category in Sure wait here already filled in, for one tap. A share you typed survives edits made in Sure.' },
   { key: 'archived', route: '/archived', name: 'Archived',
     note: 'Off the main list and out of its totals, with every entry kept. The home page keeps naming the money so it never disappears quietly.' },
   { key: 'share', route: '/t/<token>', name: 'What they see', anon: true, public: true,
@@ -115,6 +121,8 @@ async function main() {
   db.addEntry(cabin, 32000, 'Deposit');
   db.addEntry(cabin, -14000, 'Partial, cash');
   db.setArchived(cabin, true);
+
+  seedSureInbox();
 
   const server = app.listen(0);
   await new Promise((r) => server.once('listening', r));
@@ -170,6 +178,45 @@ async function main() {
 
   const kb = (fs.statSync(OUT).size / 1024).toFixed(0);
   console.log(`${path.relative(process.cwd(), OUT)}  ${kb} KB  (${SCREENS.length} screens)`);
+}
+
+/**
+ * A realistic inbox: a full-name match, a first-name guess, a repayment, a
+ * share that was later changed in Sure, and an item that has gone from Sure.
+ * Built through the real sync and action code, so the screen shows real states.
+ */
+function seedSureInbox() {
+  const sure = require('../src/sure');
+  const pad = (n) => String(n).padStart(2, '0');
+  const day = (n) => {
+    const d = new Date(Date.now() - n * 86400000);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+  const people = db.listPeopleForMatching();
+  const idOf = (name) => people.find((p) => p.name === name).id;
+  const suggest = (it) => sure.suggestPerson([it.name, it.notes], people);
+  const windowStart = day(60);
+
+  const item = (id, n, amount, name, notes, merchant, account) => ({
+    id: `00000000-0000-4000-8000-00000000000${id}`,
+    date: day(n), amount, name, notes, merchant, account,
+  });
+  const matched = item(1, 1, 6250, 'Marcus Webb', '', 'Ace Hardware', 'Everyday Checking');
+  const guessed = item(2, 2, 9000, 'CANYON GRILL #22', 'priya', 'Canyon Grill', 'Sapphire Card');
+  const repaid = item(3, 3, -40000, 'Venmo', 'Aunt Rosalie', 'Venmo', 'Everyday Checking');
+  const shared = item(4, 9, 18000, 'COSTCO WHSE #1180', 'Priya Raman', 'Costco', 'Sapphire Card');
+  const vanished = item(5, 11, 4800, 'Marcus Webb', '', 'Moab Outfitters', 'Everyday Checking');
+
+  db.applySureSync({ items: [matched, guessed, repaid, shared, vanished], windowStart, suggest });
+
+  // A third of the Costco run was Priya's; later the total is corrected in Sure.
+  sure.addItem(shared.id, { personId: idOf('Priya Raman'), amount: '60', description: 'Costco run' });
+  sure.addItem(vanished.id, { personId: idOf('Marcus Webb'), description: 'Moab Outfitters' });
+
+  const corrected = { ...shared, amount: 21000 };
+  // Two reads without the vanished item: that is what makes it "gone".
+  db.applySureSync({ items: [matched, guessed, repaid, corrected], windowStart, suggest });
+  db.applySureSync({ items: [matched, guessed, repaid, corrected], windowStart, suggest });
 }
 
 function render(cards) {
@@ -368,7 +415,7 @@ a { color: var(--accent); }
       device. Nothing is a mockup and nothing has been touched up.
     </p>
     <ul class="facts">
-      <li class="live">7 screens</li>
+      <li class="live">9 screens</li>
       <li>375 &times; 812</li>
       <li>light &amp; dark, from your OS</li>
       <li>links inert</li>

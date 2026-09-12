@@ -34,6 +34,17 @@ services:
 
       TZ: "America/Denver"
 
+      # How many reverse proxies sit in front of the app. 1 for a single proxy or
+      # a Cloudflare Tunnel straight to the container; 2 for Cloudflare in front
+      # of Nginx Proxy Manager, Caddy, Traefik and the like. A failed login logs
+      # the address it saw, so one wrong password tells you if this is right.
+      # TRUST_PROXY: "2"
+
+      # Sure review inbox (see README). A read-only API key is enough.
+      # SURE_URL: "https://finance.example.com"
+      # SURE_API_KEY: ""
+      # SURE_CATEGORY: "Owed to me"
+
       # Read-only JSON at /api/summary.json for dashboards, Home Assistant, or
       # a finance app. Blank means the route does not exist at all. Use a long
       # random string; it is a password.

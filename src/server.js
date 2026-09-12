@@ -14,6 +14,7 @@ const views = require('./views');
 const { parseAmount, centsToPlainDecimal } = require('./money');
 const { entriesToCsv } = require('./csv');
 const backup = require('./backup');
+const sure = require('./sure');
 
 const app = express();
 
@@ -43,6 +44,13 @@ const NOTICES = {
   settled: 'Settled up.',
   archived: 'Archived.',
   unarchived: 'Moved back to the main list.',
+  sure_added: 'Added to the tab.',
+  sure_dismissed: 'Dismissed. It will not come back from Sure.',
+  sure_updated: "Updated to match Sure.",
+  sure_kept: 'Kept as it is on the tab.',
+  sure_removed: 'Removed from the tab.',
+  sure_detached: 'Kept on the tab, no longer tracked in Sure.',
+  sure_synced: 'Checked Sure.',
 };
 
 const ERRORS = {
@@ -55,6 +63,10 @@ const ERRORS = {
   not_found: 'That entry no longer exists.',
   nothing_owed: 'Nothing to settle: they do not owe anything.',
   bad_date: 'Use a real date, today or earlier.',
+  sure_unknown: 'That item is no longer in the list.',
+  sure_not_pending: 'That item was already handled.',
+  sure_person_required: 'Pick who owes it, or type a new name.',
+  sure_sync_failed: 'Could not read Sure. The reason is below.',
 };
 
 // Own properties only. A plain lookup resolves ?m=constructor to the Object
@@ -83,6 +95,14 @@ app.use((req, res, next) => {
 });
 
 app.use(express.urlencoded({ extended: false, limit: '64kb' }));
+// Express 5 leaves req.body undefined when a request has no form body at all.
+// Every handler reads fields off it, so a bare POST -- curl, a crawler, a
+// one-button form -- threw a TypeError and came back as a 500 instead of the
+// ordinary 401 or validation message.
+app.use((req, res, next) => {
+  if (req.body === undefined) req.body = {};
+  next();
+});
 app.use(auth.attachSession);
 
 /**
@@ -396,6 +416,10 @@ app.post('/login', async (req, res) => {
   const ok = await auth.checkCredentials(req.body.username, req.body.password);
   if (!ok) {
     noteLoginFailure(req);
+    // The address, never the username: people type passwords into the wrong
+    // box. Also the quickest way to confirm TRUST_PROXY is right behind proxies:
+    // this should show your own public address, not Cloudflare's or the proxy's.
+    console.warn(`[iou] failed login from ${req.ip}`);
     return html(res, views.loginPage({ nextUrl, error: 'Wrong username or password.' }), 401);
   }
 
@@ -457,6 +481,7 @@ app.get('/p/:id', (req, res) => {
     notice: notice(req),
     error: errorMsg(req),
     undoEntryId: parseId(req.query.undo),
+    sureEntryIds: config.sureEnabled ? db.sureEntryIds(person.id) : new Set(),
   }));
 });
 
@@ -650,6 +675,69 @@ app.post('/p/:id/delete', (req, res) => {
   res.redirect(303, '/?m=person_deleted');
 });
 
+/* ----------------------------------------------------------- Sure inbox */
+
+/** Every /sure route 404s when the integration is not configured. */
+function sureOnly(req, res, next) {
+  if (!config.sureEnabled) return notFound(res);
+  next();
+}
+
+/** Sure ids from the URL, refused before they reach the database. */
+function sureIdParam(req) {
+  const id = String(req.params.sureId || '');
+  return sure.SURE_ID.test(id) ? id : null;
+}
+
+app.get('/sure', sureOnly, (req, res) => {
+  html(res, views.surePage({
+    pending: db.listSurePending(),
+    changed: db.listSureChanged(),
+    gone: db.listSureGone(),
+    people: db.listPeopleForMatching(),
+    status: sure.status,
+    category: config.sureCategory,
+    autoAdd: config.sureAutoAdd,
+    notice: notice(req),
+    error: errorMsg(req),
+  }));
+});
+
+app.post('/sure/sync', sureOnly, async (req, res) => {
+  const result = await sure.syncOnce();
+  res.redirect(303, result && result.error ? '/sure?e=sure_sync_failed' : '/sure?m=sure_synced');
+});
+
+/**
+ * One handler per action, all shaped the same: validate the id, act, and go
+ * back to the inbox with a message. Nothing here reaches Sure; Sure is only
+ * ever read.
+ */
+const sureAction = (action, done) => (req, res) => {
+  const id = sureIdParam(req);
+  if (!id) return res.redirect(303, '/sure?e=sure_unknown');
+  // Express 5 leaves req.body undefined when a request carries no form body,
+  // which a one-button form such as "Use Sure's" does not. Reading a field off
+  // it would throw and turn the tap into a 500.
+  const outcome = action(id, req.body || {});
+  res.redirect(303, outcome.ok ? `/sure?m=${done}` : `/sure?e=${outcome.code}`);
+};
+
+app.post('/sure/items/:sureId/add', sureOnly, sureAction((id, body) => sure.addItem(id, {
+  personId: parseId(body.person_id),
+  newPersonName: body.new_person,
+  amount: body.amount,
+  description: body.description,
+}), 'sure_added'));
+
+app.post('/sure/items/:sureId/dismiss', sureOnly, sureAction((id) => sure.dismissItem(id), 'sure_dismissed'));
+app.post('/sure/items/:sureId/accept', sureOnly, sureAction((id, body) => sure.acceptChange(id, {
+  amount: body.amount,
+}), 'sure_updated'));
+app.post('/sure/items/:sureId/keep', sureOnly, sureAction((id) => sure.keepTabValue(id), 'sure_kept'));
+app.post('/sure/items/:sureId/remove', sureOnly, sureAction((id) => sure.removeGone(id), 'sure_removed'));
+app.post('/sure/items/:sureId/keep-gone', sureOnly, sureAction((id) => sure.keepGone(id), 'sure_detached'));
+
 /** For a lost phone or a browser you no longer control. */
 app.post('/logout-all', (req, res) => {
   db.revokeAllSessions();
@@ -774,7 +862,11 @@ async function start() {
   });
 
   const stopBackups = backup.start();
-  server.on('close', stopBackups);
+  const stopSure = sure.start();
+  server.on('close', () => {
+    stopBackups();
+    stopSure();
+  });
 
   for (const signal of ['SIGTERM', 'SIGINT']) {
     process.on(signal, () => server.close(() => process.exit(0)));

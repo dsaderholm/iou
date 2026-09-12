@@ -425,3 +425,77 @@ button, .button {
 .entries.activity .entry-meta { gap: .5rem; }
 .entries.activity .entry-desc { margin-right: auto; font-size: .8rem; }
 .entries.activity .badge { margin-left: 0; }
+
+/* --------------------------------------------------------------- sure inbox */
+
+.bar nav .count {
+  display: inline-block;
+  min-width: 1.25rem;
+  padding: 0 .35rem;
+  border-radius: 999px;
+  background: var(--owed);
+  color: #fff;
+  font-size: .72rem;
+  font-weight: 700;
+  line-height: 1.25rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.sure-callout {
+  margin: 0 0 1rem;
+  padding: .7rem .85rem;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--surface);
+  font-weight: 600;
+}
+
+.sure-callout a { text-decoration: none; }
+
+.badge-sure { margin-left: 0; border-color: var(--accent); color: var(--accent); }
+
+.sure-status { justify-content: space-between; align-items: center; margin: 0 0 .5rem; }
+.sure-status .sure-meta { margin: 0; }
+
+.sure-item p { margin: .25rem 0; }
+.sure-item + .sure-item { margin-top: .75rem; }
+
+.sure-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+}
+
+.sure-dir { font-size: .8rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+.sure-dir.owed { color: var(--owed); }
+.sure-dir.credit { color: var(--credit); }
+.sure-head .amount { font-size: 1.35rem; }
+
+.sure-meta { color: var(--muted); font-size: .85rem; }
+.sure-what { overflow-wrap: anywhere; }
+.sure-match { color: var(--muted); font-size: .85rem; }
+
+.sure-form { margin-top: .6rem; display: flex; flex-direction: column; gap: .5rem; }
+.sure-form label { font-size: .85rem; color: var(--muted); }
+.sure-form .row > input[name="new_person"],
+.sure-form .row > input[name="description"] { flex: 1 1 auto; }
+.sure-form .amount-input { flex: 0 0 7.5rem; font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+.sure-form button { width: 100%; }
+
+.sure-form select {
+  flex: 1 1 auto;
+  min-height: 48px;
+  padding: .55rem .6rem;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.sure-flag { border-color: var(--owed); }
+.sure-actions { margin-top: .5rem; }
+.sure-actions > * { flex: 1; }
+.sure-actions button { width: 100%; }

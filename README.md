@@ -81,6 +81,12 @@ the published image, so swap `image:` for `build: .` if you want a local build.
 | `BACKUP_ENABLED` | no | `true` | Write a backup into `/data/backups` at every start, then daily. |
 | `BACKUP_KEEP` | no | `14` | How many **days** of backups to keep, one per day. The newest three files are kept as well, whatever day they are from. |
 | `BACKUP_INTERVAL_HOURS` | no | `24` | How often to take one. Whole hours, at most 596 -- the longest delay a timer can hold. An unusable value is ignored with a warning rather than quietly running backups every millisecond. |
+| `SURE_URL` | no | — | Address of your [Sure](https://github.com/we-promise/sure) instance, e.g. `https://finance.example.com`. With `SURE_API_KEY`, turns on the review inbox. |
+| `SURE_API_KEY` | no | — | A Sure API key with the **read** scope. Nothing here ever writes to Sure. |
+| `SURE_CATEGORY` | no | `Owed to me` | The Sure category that marks money someone owes you. |
+| `SURE_POLL_MINUTES` | no | `5` | How often to check Sure. |
+| `SURE_LOOKBACK_DAYS` | no | `60` | How far back each check reads. |
+| `SURE_AUTO_ADD` | no | `false` | Add transactions that match exactly one person's full name without asking. Leave off unless you trust your categorizing; see below. |
 | `TZ` | no | `UTC` | Timestamps are stored in UTC and displayed in this zone. |
 | `PORT` | no | `3000` | Port inside the container. |
 | `DATA_DIR` | no | `/data` | Where the database and generated secret live. |
@@ -146,6 +152,79 @@ of day, rather than inventing a time the entry never had.
 as the authoritative column and a signed `amount_usd` for spreadsheets.
 **Download database backup** at the bottom of the home page gives you the whole
 SQLite file, share tokens included, which the CSV cannot do.
+
+## Sure: owed money from your finance app
+
+If you use [Sure](https://github.com/we-promise/sure) (the community fork of
+Maybe Finance), transactions you mark as owed there show up here already filled
+in, waiting for one tap. You do not type the amount, the date, or the
+description twice.
+
+### In Sure, once
+
+1. Create a category called **Owed to me**.
+2. Create a rule: *when the category is Owed to me*, **Exclude from budgeting
+   and reports**. Money someone owes you is not your spending. Rules run when
+   Sure syncs your accounts, so the exclusion lands at the next sync rather than
+   the moment you categorize.
+3. Create an API key with the **read** scope.
+
+### In Sure, per transaction
+
+- **Someone owes the whole thing:** set the category to *Owed to me* and put
+  their name in the notes.
+- **Someone owes part of it:** split the transaction. Keep your part in its real
+  category. Name their part after them, set it to *Owed to me*, and tick
+  Exclude. For two people, make two parts.
+- **They pay you back:** set the incoming payment to *Owed to me* with their
+  name in the notes. It arrives here as a payment and stays out of your income.
+
+A split part has no notes field in Sure, only a name, which is why the person
+goes in the part's name there and in the notes everywhere else. Both are read.
+
+### Here
+
+Set `SURE_URL` and `SURE_API_KEY`. **From Sure** appears in the header with a
+count. Each item shows who it matched and how, with the amount and description
+ready to edit, and **Add to tab** posts it. Add a share rather than the whole
+amount by typing it before you add.
+
+People are matched by their full name as whole words, accents ignored, so
+`Josué Núñez` in a Sure note finds `Josue Nunez` here. A first name alone is
+offered as a guess only when nobody else shares it, and is never added
+automatically.
+
+### Why it asks before adding
+
+Sure's API does not say whether a transaction is pending, excluded, or part of a
+split, and **editing a split in Sure deletes its parts and recreates them with
+new ids**. A sync that added everything automatically would count the same
+money twice after a split edit, or after a pending charge and its posted copy
+both land in *Owed to me* -- on a page your friends can see. So nothing reaches
+a balance until you add it, and the inbox handles what comes after:
+
+- **A split edited in Sure:** parts you had not added drop out of the inbox. A
+  part you had added is flagged *No longer in Sure*, with Remove or Keep; the new
+  parts arrive as new items.
+- **A transaction changed in Sure after you added it:** flagged, never rewritten.
+  If you had added a share, the card says so, suggests the same share of the new
+  total, and the date follows Sure either way. A share is never replaced by the
+  full amount.
+- **Pending and posted copies:** both appear; dismiss one. Dismissed items never
+  come back.
+
+And some things it will not do:
+
+- Act on a failed or partial read. Every page has to come back, as JSON, before
+  anything is compared -- an outage, an expired key or a Cloudflare challenge
+  never looks like everything was deleted. A renamed category is an error, not
+  an empty list.
+- Call something gone after a single missing read, or for anything older than
+  the lookback window.
+- Write to Sure, or follow a redirect with your key attached.
+
+**Do not also tap Record payment** for a repayment that comes through Sure, or it
+counts twice.
 
 ## Health, backups, and integrations
 
