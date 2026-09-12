@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const express = require('express');
 const bcrypt = require('bcryptjs');
 
@@ -10,8 +11,9 @@ const config = require('./config');
 const db = require('./db');
 const auth = require('./auth');
 const views = require('./views');
-const { parseAmount } = require('./money');
+const { parseAmount, centsToPlainDecimal } = require('./money');
 const { entriesToCsv } = require('./csv');
+const backup = require('./backup');
 
 const app = express();
 
@@ -51,6 +53,7 @@ const ERRORS = {
   name_required: 'A name is required.',
   not_found: 'That entry no longer exists.',
   nothing_owed: 'Nothing to settle: they do not owe anything.',
+  bad_date: 'Use a real date, today or earlier.',
 };
 
 const notice = (req) => NOTICES[req.query.m] || '';
@@ -172,6 +175,26 @@ function trimName(raw) {
 
 /* ------------------------------------------------------------ public routes */
 
+/**
+ * Liveness for the container healthcheck. It runs a real query, because the
+ * failure worth catching is the database being locked, corrupt, or on a volume
+ * that did not mount -- states in which Express will happily keep serving
+ * static files and look perfectly healthy.
+ *
+ * Public, because the healthcheck has no session, and it reveals nothing: no
+ * counts, no names, no balances.
+ */
+app.get('/healthz', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    if (!db.ping()) throw new Error('database did not answer');
+    res.json({ status: 'ok', database: 'ok', uptime_seconds: Math.round(process.uptime()) });
+  } catch (err) {
+    console.error(`[iou] healthz failed: ${err.message}`);
+    res.status(503).json({ status: 'error', database: 'unavailable' });
+  }
+});
+
 app.get('/robots.txt', (req, res) => {
   res.type('text/plain').set('Cache-Control', 'public, max-age=86400')
     .send('User-agent: *\nDisallow: /\n');
@@ -213,6 +236,67 @@ app.get('/t/:token', (req, res) => {
   const balance = entries.length ? entries[entries.length - 1].running_balance : 0;
   html(res, views.sharePage({ person, entries, balance }));
 });
+
+/**
+ * Read-only JSON for dashboards and finance tools.
+ *
+ * Its own bearer token, not the session cookie: this is for scripts, and the
+ * admin session should not be something you paste into another service. With
+ * API_TOKEN unset the route does not exist at all, so turning it off is the
+ * default rather than an option.
+ *
+ * Share tokens are deliberately absent from the payload. They are bearer
+ * credentials for somebody's private page, and an integration has no business
+ * holding them.
+ */
+app.get('/api/summary.json', (req, res) => {
+  if (!config.apiToken) return notFound(res);
+
+  const offered = (req.get('x-api-key') || '')
+    || (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
+  if (!timingSafeEqual(offered, config.apiToken)) {
+    return res.status(401).set('Cache-Control', 'no-store')
+      .json({ error: 'unauthorized' });
+  }
+
+  const active = db.listPeopleWithBalances();
+  const archived = db.listArchivedPeople();
+  const summary = db.archivedSummary();
+
+  const shape = (p, isArchived) => ({
+    id: p.id,
+    name: p.name,
+    balance_cents: p.balance,
+    balance: centsToPlainDecimal(p.balance),
+    negative: p.balance < 0,
+    entry_count: p.entry_count,
+    archived: isArchived,
+  });
+
+  res.set('Cache-Control', 'no-store').json({
+    generated_at: new Date().toISOString(),
+    currency: 'USD',
+    totals: {
+      // Matches the home page exactly: active people only.
+      owed_cents: active.reduce((sum, p) => sum + (p.balance > 0 ? p.balance : 0), 0),
+      net_cents: active.reduce((sum, p) => sum + p.balance, 0),
+      archived_owed_cents: summary.owed,
+      people: active.length,
+      archived_people: summary.count,
+    },
+    people: [
+      ...active.map((p) => shape(p, false)),
+      ...archived.map((p) => shape(p, true)),
+    ],
+  });
+});
+
+/** Constant-time string compare that does not leak length through timing. */
+function timingSafeEqual(a, b) {
+  const ha = crypto.createHash('sha256').update(String(a)).digest();
+  const hb = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
 
 /* ------------------------------------------------------------------- login */
 
@@ -355,6 +439,14 @@ app.get('/p/:id', (req, res) => {
   }));
 });
 
+app.get('/activity', (req, res) => {
+  html(res, views.activityPage({
+    entries: db.recentActivity(100),
+    notice: notice(req),
+    error: errorMsg(req),
+  }));
+});
+
 app.get('/archived', (req, res) => {
   html(res, views.archivedPage({
     people: db.listArchivedPeople(),
@@ -431,9 +523,44 @@ app.post('/p/:id/entries/:entryId/edit', (req, res) => {
   const description = String(req.body.description == null ? '' : req.body.description)
     .trim().slice(0, 200);
 
-  db.updateEntry(person.id, entry.id, amount, description);
+  const movedTo = shiftedCreatedAt(entry.created_at, req.body.date);
+  if (movedTo === false) return res.redirect(303, `/p/${person.id}/entries/${entry.id}/edit?e=bad_date`);
+
+  db.updateEntry(person.id, entry.id, amount, description, movedTo);
   res.redirect(303, `/p/${person.id}?m=entry_updated`);
 });
+
+/**
+ * Work out the new created_at when the date field has been changed.
+ *
+ * Returns null to leave the timestamp alone, false if the input is unusable,
+ * or a "YYYY-MM-DD HH:MM:SS" UTC string.
+ *
+ * It moves the stored timestamp by whole days rather than rebuilding it, which
+ * keeps the time of day the entry was recorded at. Across a daylight saving
+ * boundary the displayed time shifts by an hour; that is a better trade than
+ * inventing a time the entry never had.
+ */
+function shiftedCreatedAt(currentCreatedAt, submitted) {
+  const wanted = String(submitted == null ? '' : submitted).trim();
+  if (!wanted) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(wanted)) return false;
+
+  const currentLocal = views.localDateInputValue(currentCreatedAt);
+  if (wanted === currentLocal) return null;
+
+  const target = Date.parse(`${wanted}T00:00:00Z`);
+  const origin = Date.parse(`${currentLocal}T00:00:00Z`);
+  if (Number.isNaN(target) || Number.isNaN(origin)) return false;
+
+  // No future-dating, and nothing absurd from a fat-fingered year.
+  const tomorrow = Date.now() + 36 * 60 * 60 * 1000;
+  if (target > tomorrow || target < Date.parse('2000-01-01T00:00:00Z')) return false;
+
+  const shifted = new Date(Date.parse(`${currentCreatedAt.replace(' ', 'T')}Z`) + (target - origin));
+  if (Number.isNaN(shifted.getTime())) return false;
+  return shifted.toISOString().replace('T', ' ').slice(0, 19);
+}
 
 /**
  * Record a payment for exactly what is owed. The balance is read here rather
@@ -582,7 +709,11 @@ function start() {
   db.init();
   const server = app.listen(config.port, () => {
     console.log(`[iou] listening on :${config.port}  db=${db.DB_PATH}`);
+    if (config.apiToken) console.log('[iou] JSON summary enabled at /api/summary.json');
   });
+
+  const stopBackups = backup.start();
+  server.on('close', stopBackups);
 
   for (const signal of ['SIGTERM', 'SIGINT']) {
     process.on(signal, () => server.close(() => process.exit(0)));

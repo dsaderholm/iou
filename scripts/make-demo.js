@@ -71,6 +71,8 @@ const SCREENS = [
     note: 'Delete is soft, so the notice can hand the row straight back.' },
   { key: 'edit', route: '/p/1/entries/2/edit', name: 'Fixing a mistake',
     note: 'Amount, wording, or direction. The original date stays put.' },
+  { key: 'activity', route: '/activity', name: 'Everything recent',
+    note: 'Across everyone, newest first. The only view that catches a charge on the wrong tab.' },
   { key: 'archived', route: '/archived', name: 'Archived',
     note: 'Off the main list and out of its totals, with every entry kept. The home page keeps naming the money so it never disappears quietly.' },
   { key: 'share', route: '/t/<token>', name: 'What they see', anon: true, public: true,

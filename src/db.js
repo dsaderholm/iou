@@ -202,7 +202,17 @@ function addEntry(personId, amountCents, description) {
   ).run(personId, amountCents, description).lastInsertRowid);
 }
 
-function updateEntry(personId, entryId, amountCents, description) {
+/**
+ * @param {string|null} createdAt  "YYYY-MM-DD HH:MM:SS" in UTC, or null to
+ *                                 leave the original timestamp alone.
+ */
+function updateEntry(personId, entryId, amountCents, description, createdAt = null) {
+  if (createdAt) {
+    return db.prepare(`
+      UPDATE entries SET amount = ?, description = ?, created_at = ?
+      WHERE id = ? AND person_id = ? AND deleted_at IS NULL
+    `).run(amountCents, description, createdAt, entryId, personId).changes;
+  }
   return db.prepare(`
     UPDATE entries SET amount = ?, description = ?
     WHERE id = ? AND person_id = ? AND deleted_at IS NULL
@@ -241,6 +251,29 @@ function recentDescriptions(personId, negative, limit = 8) {
     ORDER BY last_id DESC
     LIMIT ?
   `).all(personId, limit).map((r) => r.description);
+}
+
+/**
+ * The most recent entries across everyone, newest first. This is the only view
+ * that can catch a charge landing on the wrong person: per-person history
+ * cannot show you a mistake you do not already suspect.
+ */
+function recentActivity(limit = 100) {
+  return db.prepare(`
+    SELECT e.id, e.amount, e.description, e.created_at,
+           p.id AS person_id, p.name AS person_name, p.archived_at
+    FROM entries e
+    JOIN people p ON p.id = e.person_id
+    WHERE e.deleted_at IS NULL
+    ORDER BY e.id DESC
+    LIMIT ?
+  `).all(limit);
+}
+
+/** Cheap liveness probe: proves the file is open and readable, not just that
+ *  the process is up. */
+function ping() {
+  return db.prepare('SELECT 1 AS ok').get().ok === 1;
 }
 
 /** Every live entry, joined to its person, for CSV export. */
@@ -289,6 +322,8 @@ module.exports = {
   setArchived,
   deletePerson,
   regenerateToken,
+  recentActivity,
+  ping,
   allEntriesForExport,
   backupTo,
 };

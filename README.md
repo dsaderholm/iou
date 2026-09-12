@@ -77,6 +77,10 @@ the published image, so swap `image:` for `build: .` if you want a local build.
 | `SITE_TITLE` | no | `IOU` | Shown in the admin header. |
 | `OWNER_NAME` | no | — | Share page reads "you owe to `<name>`". |
 | `PUBLIC_BASE_URL` | no | from request | The address people actually use, e.g. `https://iou.example.com`. Only needed if your proxy rewrites `Host`. |
+| `API_TOKEN` | no | — | Enables read-only JSON at `/api/summary.json`. Blank means the route does not exist. Treat it as a password. |
+| `BACKUP_ENABLED` | no | `true` | Write a backup into `/data/backups` at every start, then daily. |
+| `BACKUP_KEEP` | no | `14` | How many backups to keep. |
+| `BACKUP_INTERVAL_HOURS` | no | `24` | How often to take one after the first. |
 | `TZ` | no | `UTC` | Timestamps are stored in UTC and displayed in this zone. |
 | `PORT` | no | `3000` | Port inside the container. |
 | `DATA_DIR` | no | `/data` | Where the database and generated secret live. |
@@ -115,10 +119,10 @@ Amounts accept anything a phone keypad or a paste produces: `12`, `12.5`,
 rounded, so a typo is visible instead of silent. The form decides the sign, not
 the text you type.
 
-**Mistakes are recoverable.** *Edit* changes an entry's amount, description or
-direction while keeping its original date and position in the history. *Delete*
-is a soft delete, and the notice that follows offers **Undo** — a mis-tap on a
-phone costs nothing.
+**Mistakes are recoverable.** *Edit* changes an entry's amount, description,
+direction or date, keeping its position in the history. *Delete* is a soft
+delete, and the notice that follows offers **Undo** — a mis-tap on a phone costs
+nothing.
 
 **Archive** takes someone off the main list and out of its totals while keeping
 every entry, which is almost always what you want instead of *Delete
@@ -129,10 +133,64 @@ Because archiving removes someone from *Owed to you*, it says so twice: it asks
 first if they still have a balance, and the home page keeps naming the archived
 amount underneath the list. Money never leaves that page silently.
 
+**Activity** in the header lists recent entries across everyone, newest first.
+It is the only view that can catch a charge landing on the wrong tab — per-person
+history cannot show you a mistake you do not already suspect. Tap a name to open
+that tab and fix it.
+
+Editing an entry can also move its **date**, for when you record on Sunday
+something that happened on Tuesday. It shifts by whole days and keeps the time
+of day, rather than inventing a time the entry never had.
+
 **CSV** in the header exports every entry for every person, with `amount_cents`
 as the authoritative column and a signed `amount_usd` for spreadsheets.
 **Download database backup** at the bottom of the home page gives you the whole
 SQLite file, share tokens included, which the CSV cannot do.
+
+## Health, backups, and integrations
+
+`GET /healthz` runs a real query and returns `{"status":"ok","database":"ok"}`,
+or `503` if the database is locked, corrupt, or on a volume that did not mount.
+The container healthcheck uses it. It needs no session and reveals nothing —
+no names, balances, or counts.
+
+Backups are automatic. One is written to `/data/backups` at every start, so
+every upgrade snapshots before the new code touches anything, then once a day,
+keeping the newest `BACKUP_KEEP`. They go through SQLite's backup API, so they
+are consistent even mid-write. *Download database backup* on the home page
+still gives you one on demand.
+
+Set `API_TOKEN` and `GET /api/summary.json` returns totals and per-person
+balances as JSON:
+
+```bash
+curl -H "X-Api-Key: $API_TOKEN" https://iou.example.com/api/summary.json
+```
+
+```json
+{
+  "generated_at": "2026-09-12T17:40:18.659Z",
+  "currency": "USD",
+  "totals": { "owed_cents": 25875, "net_cents": 25875, "archived_owed_cents": 0 },
+  "people": [
+    { "id": 1, "name": "Marcus Webb", "balance_cents": 24000, "balance": "240.00",
+      "negative": false, "entry_count": 1, "archived": false }
+  ]
+}
+```
+
+`Authorization: Bearer` works too. It uses its own token rather than the session
+cookie, because the admin session is not something to paste into another
+service. Share tokens are deliberately absent from the payload: they are bearer
+credentials for somebody's private page, and an integration that wants balances
+has no business holding them.
+
+That endpoint is the integration point for a dashboard, a Home Assistant sensor,
+or a personal finance app. Worth knowing before wiring one up: the money this
+app tracks is a *receivable*, which no bank feed will ever tell your finance
+app. Pushing these as transactions instead tends to double-count, because the
+card payment and the repayment are usually already arriving through your normal
+account sync.
 
 ## The share page
 

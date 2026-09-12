@@ -34,6 +34,17 @@ services:
 
       TZ: "America/Denver"
 
+      # Read-only JSON at /api/summary.json for dashboards, Home Assistant, or
+      # a finance app. Blank means the route does not exist at all. Use a long
+      # random string; it is a password.
+      API_TOKEN: ""
+
+      # A backup is written to /data/backups on every start (so every upgrade
+      # snapshots first) and then once a day, keeping the newest 14.
+      BACKUP_ENABLED: "true"
+      BACKUP_KEEP: "14"
+      BACKUP_INTERVAL_HOURS: "24"
+
       # Blank: a random session secret is written to /data on first run and
       # reused. Set it to keep logins alive across a wiped volume.
       SESSION_SECRET: ""
@@ -45,7 +56,7 @@ services:
       # ADMIN_PASSWORD_HASH: ""
 
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/robots.txt').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 3s
       retries: 3

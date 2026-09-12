@@ -71,9 +71,13 @@ jobs:
             -e ADMIN_USER=ci -e ADMIN_PASSWORD=ci-password \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:3000/robots.txt >/dev/null 2>&1; then break; fi
+            if curl -fsS http://127.0.0.1:3000/healthz >/dev/null 2>&1; then break; fi
             sleep 1
           done
+          echo "--- healthz (must report the database, not just the server) ---"
+          curl -fsS http://127.0.0.1:3000/healthz
+          echo ""
+          test "$(curl -s http://127.0.0.1:3000/healthz | grep -c '"database":"ok"')" = "1"
           echo "--- robots.txt ---"
           curl -fsS http://127.0.0.1:3000/robots.txt
           echo "--- login page reachable ---"

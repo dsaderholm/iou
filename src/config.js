@@ -64,6 +64,16 @@ const config = {
   siteTitle: process.env.SITE_TITLE || 'IOU',
   // Who the money is owed to. Shown on the share page next to the payment links.
   ownerName: process.env.OWNER_NAME || '',
+  // Read-only JSON for dashboards and finance tools. Unset disables the route
+  // entirely rather than leaving it open.
+  apiToken: (process.env.API_TOKEN || '').trim(),
+
+  // Automatic backups into DATA_DIR/backups. One runs at boot, which makes
+  // every container restart -- and so every upgrade -- take a snapshot first.
+  backupEnabled: (process.env.BACKUP_ENABLED || 'true') !== 'false',
+  backupKeep: Math.max(1, Number(process.env.BACKUP_KEEP || 14)),
+  backupIntervalHours: Math.max(1, Number(process.env.BACKUP_INTERVAL_HOURS || 24)),
+
   venmoHandle: cleanHandle(process.env.VENMO_HANDLE, 'venmo.com/', 'www.venmo.com/'),
   paypalMe: cleanHandle(process.env.PAYPAL_ME, 'paypal.me/', 'www.paypal.me/', 'paypal.com/paypalme/'),
   cashappHandle: cleanHandle(process.env.CASHAPP_HANDLE, 'cash.app/', 'cash.me/'),

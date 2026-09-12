@@ -90,6 +90,7 @@ function adminHeader() {
   return `<header class="bar">
   <a class="bar-home" href="/">${esc(config.siteTitle)}</a>
   <nav>
+    <a href="/activity">Activity</a>
     <a href="/export.csv">CSV</a>
     <form method="post" action="/logout"><button class="linkish" type="submit">Log out</button></form>
   </nav>
@@ -182,6 +183,43 @@ ${archivedLink}
 <p class="archived-link"><a href="/export.db">Download database backup</a></p>`;
 
   return layout({ title: config.siteTitle, body, chrome: true, installable: true });
+}
+
+/* ---------------------------------------------------------------- activity */
+
+/**
+ * Everything recent, across everyone. The per-person history cannot show you a
+ * charge that landed on the wrong tab, because you would have to already
+ * suspect it to go looking.
+ */
+function activityPage({ entries, notice, error }) {
+  const rows = entries.length === 0
+    ? '<p class="empty">Nothing recorded yet.</p>'
+    : `<ul class="entries activity">${entries.map((e) => `
+      <li>
+        <div class="entry-main">
+          <a class="entry-who" href="/p/${e.person_id}">${esc(e.person_name)}</a>
+          <span class="amount ${e.amount < 0 ? 'credit' : 'owed'}">${esc(formatCents(e.amount))}</span>
+        </div>
+        <div class="entry-meta">
+          <span class="entry-desc">${esc(e.description || (e.amount < 0 ? 'Payment' : 'Charge'))}</span>
+          <time datetime="${esc(isoDate(e.created_at))}">${esc(formatDate(e.created_at))}</time>
+          ${e.archived_at ? '<span class="badge">archived</span>' : ''}
+        </div>
+      </li>`).join('')}</ul>`;
+
+  const body = `
+<p class="back"><a href="/">&larr; All people</a></p>
+${flash('notice', notice)}
+${flash('error', error)}
+<section class="headline">
+  <h1>Activity</h1>
+  <p class="headline-sub">The last ${entries.length} entries, newest first, across everyone.
+     Tap a name to open that tab.</p>
+</section>
+${rows}`;
+
+  return layout({ title: 'Activity - ' + config.siteTitle, body, chrome: true, installable: true });
 }
 
 /* ------------------------------------------------------------ archived list */
@@ -350,6 +388,7 @@ ${datalist('payment-history', paymentSuggestions)}
 function editEntryPage({ person, entry, error }) {
   const isPayment = entry.amount < 0;
   const amount = centsToPlainDecimal(entry.amount);
+  const onDate = localDateInputValue(entry.created_at);
 
   const body = `
 <p class="back"><a href="/p/${person.id}">&larr; ${esc(person.name)}</a></p>
@@ -357,7 +396,7 @@ ${flash('error', error)}
 
 <section class="headline">
   <h1>Edit entry</h1>
-  <p class="headline-sub">Added ${esc(formatDate(entry.created_at))}. Editing keeps that date.</p>
+  <p class="headline-sub">Recorded ${esc(formatDate(entry.created_at))}.</p>
 </section>
 
 <form class="card entry-form" method="post" action="/p/${person.id}/entries/${entry.id}/edit">
@@ -371,6 +410,10 @@ ${flash('error', error)}
   <label for="edit-description">Description</label>
   <input id="edit-description" name="description" type="text" maxlength="200"
          value="${esc(entry.description)}" autocapitalize="sentences" autocomplete="off">
+
+  <label for="edit-date">Date</label>
+  <input id="edit-date" name="date" type="date" value="${esc(onDate)}"
+         max="${esc(localDateInputValue(new Date().toISOString().replace('T', ' ').slice(0, 19)))}">
 
   <fieldset class="kind">
     <legend>Type</legend>
@@ -513,12 +556,21 @@ function errorPage() {
   });
 }
 
+/** An entry's date as the server's local calendar day, for <input type="date">. */
+function localDateInputValue(sqliteDate) {
+  const d = parseSqliteDate(sqliteDate) || new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 module.exports = {
   esc,
   layout,
   formatDate,
+  localDateInputValue,
   loginPage,
   homePage,
+  activityPage,
   archivedPage,
   personPage,
   editEntryPage,

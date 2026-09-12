@@ -410,3 +410,18 @@ button, .button {
 .entry-form .kind input[type="radio"] { width: 20px; height: 20px; accent-color: var(--accent); }
 
 .entry-form .button.secondary { width: 100%; margin-top: .5rem; }
+
+/* ---------------------------------------------------------------- activity */
+
+.entries.activity .entry-who {
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.entries.activity .entry-who:active { color: var(--accent); }
+
+.entries.activity .entry-meta { gap: .5rem; }
+.entries.activity .entry-desc { margin-right: auto; font-size: .8rem; }
+.entries.activity .badge { margin-left: 0; }
