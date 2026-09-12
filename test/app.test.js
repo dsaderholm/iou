@@ -413,7 +413,10 @@ test('payment links carry the balance, and unset services are omitted', async ()
   const token = await personToken(id);
   const body = await (await get(`/t/${token}`, { cookie: null })).text();
 
-  assert.match(body, /https:\/\/venmo\.com\/test-venmo\?txn=charge&amp;amount=1234\.56&amp;note=/);
+  // txn=pay: the viewer owes money, so the button must open a payment to the
+  // owner, not a request for money from them.
+  assert.match(body, /https:\/\/venmo\.com\/test-venmo\?txn=pay&amp;amount=1234\.56&amp;note=/);
+  assert.doesNotMatch(body, /txn=charge/, 'a charge link would point the money the wrong way');
   assert.match(body, /https:\/\/cash\.app\/\$test-cash\/1234\.56/);
   assert.match(body, /https:\/\/paypal\.me\/test-pp\/1234\.56USD/);
 });

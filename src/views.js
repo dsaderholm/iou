@@ -470,8 +470,12 @@ function paymentLinks(balance, personName) {
   if (config.venmoHandle) {
     links.push({
       label: 'Pay with Venmo',
+      // txn=pay, not txn=charge. On Venmo, "charge" opens a request for money
+      // FROM the profile in the link -- so a charge link on this page would ask
+      // the person who is owed to pay the person who owes them. The viewer here
+      // is the debtor, and the button says Pay.
       href: 'https://venmo.com/' + encodeURIComponent(config.venmoHandle) +
-            '?txn=charge&amount=' + encodeURIComponent(amount) +
+            '?txn=pay&amount=' + encodeURIComponent(amount) +
             '&note=' + encodeURIComponent(note),
       cls: 'venmo',
     });
