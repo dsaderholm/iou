@@ -22,12 +22,12 @@ process.env.SESSION_SECRET = 'demo-only-secret';
 process.env.ADMIN_USER = 'demo';
 process.env.ADMIN_PASSWORD_HASH = require('bcryptjs').hashSync('demo-password', 10);
 process.env.SITE_TITLE = process.env.SITE_TITLE || 'IOU';
-process.env.OWNER_NAME = process.env.OWNER_NAME || 'DJ';
-process.env.VENMO_HANDLE = process.env.VENMO_HANDLE || 'dj-saderholm';
-process.env.CASHAPP_HANDLE = process.env.CASHAPP_HANDLE || 'djsaderholm';
-process.env.PAYPAL_ME = process.env.PAYPAL_ME || 'djsaderholm';
+process.env.OWNER_NAME = process.env.OWNER_NAME || 'Alex';
+process.env.VENMO_HANDLE = process.env.VENMO_HANDLE || 'alex-example';
+process.env.CASHAPP_HANDLE = process.env.CASHAPP_HANDLE || 'alexexample';
+process.env.PAYPAL_ME = process.env.PAYPAL_ME || 'alexexample';
 process.env.PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || 'https://iou.example.com';
-process.env.TZ = process.env.TZ || 'America/Denver';
+process.env.TZ = process.env.TZ || 'America/New_York';
 // Turns the Sure inbox on for the gallery. Nothing is ever fetched: the demo
 // seeds the inbox directly and never starts the poller.
 process.env.SURE_URL = 'https://finance.example.com';

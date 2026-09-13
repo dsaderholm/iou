@@ -1,4 +1,4 @@
-# Paste this straight into Dockhand (or run `docker compose up -d`).
+# Paste this into your container manager, or run `docker compose up -d`.
 # Edit the two lines under "required" and you are done.
 
 services:
@@ -32,7 +32,8 @@ services:
       # Share links are built from it. Set this if a proxy rewrites Host.
       PUBLIC_BASE_URL: ""
 
-      TZ: "America/Denver"
+      # Your time zone, for how entry dates display, e.g. "America/New_York".
+      TZ: "UTC"
 
       # How many reverse proxies sit in front of the app. 1 for a single proxy or
       # a Cloudflare Tunnel straight to the container; 2 for Cloudflare in front

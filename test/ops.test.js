@@ -17,7 +17,7 @@ process.env.ADMIN_USER = 'admin';
 process.env.ADMIN_PASSWORD_HASH = require('bcryptjs').hashSync('hunter2', 10);
 process.env.API_TOKEN = 'test-api-token-abcdef';
 process.env.BACKUP_KEEP = '3';
-process.env.TZ = 'America/Denver';
+process.env.TZ = 'America/New_York';
 
 const { app } = require('../src/server');
 const db = require('../src/db');

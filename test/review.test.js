@@ -19,7 +19,7 @@ process.env.SESSION_SECRET = 'review-secret-not-a-real-one';
 process.env.ADMIN_USER = 'admin';
 process.env.ADMIN_PASSWORD_HASH = require('bcryptjs').hashSync('hunter2', 10);
 process.env.BACKUP_KEEP = '3';
-process.env.TZ = 'America/Denver';
+process.env.TZ = 'America/New_York';
 delete process.env.TRUST_PROXY; // exercise the shipped default
 
 const ROOT = path.join(__dirname, '..');

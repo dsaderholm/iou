@@ -13,10 +13,12 @@ Not bill splitting, not invoicing, not budgeting.
   screen, and amount fields use `inputmode="decimal"` so Android opens the
   number pad.
 - Installs to the home screen. Open it from an icon, not a bookmark.
+- Optionally reads money you mark as owed in [Sure](https://github.com/we-promise/sure)
+  into a review inbox, so a card transaction never has to be typed twice.
 
 ## Quick start
 
-Paste [`docker-compose.yml`](docker-compose.yml) into Dockhand (or run
+Paste [`docker-compose.yml`](docker-compose.yml) into your container manager (or run
 `docker compose up -d`), change these two lines, and deploy:
 
 ```yaml
@@ -126,9 +128,11 @@ rounded, so a typo is visible instead of silent. The form decides the sign, not
 the text you type.
 
 **Mistakes are recoverable.** *Edit* changes an entry's amount, description,
-direction or date. History is ordered by date, so a backdated entry moves to where it belongs and the running balance beside it is correct for that day. *Delete* is a soft
-delete, and the notice that follows offers **Undo** — a mis-tap on a phone costs
-nothing.
+direction or date -- the date for when you record on Sunday something that
+happened on Tuesday. It moves by whole days and keeps the time of day. History
+is ordered by date, so a backdated entry moves to where it belongs and the
+running balance beside it is right for that day. *Delete* is a soft delete, and
+the notice that follows offers **Undo**, so a mis-tap on a phone costs nothing.
 
 **Archive** takes someone off the main list and out of its totals while keeping
 every entry, which is almost always what you want instead of *Delete
@@ -144,10 +148,6 @@ It is the only view that can catch a charge landing on the wrong tab — per-per
 history cannot show you a mistake you do not already suspect. Tap a name to open
 that tab and fix it.
 
-Editing an entry can also move its **date**, for when you record on Sunday
-something that happened on Tuesday. It shifts by whole days and keeps the time
-of day, rather than inventing a time the entry never had.
-
 **CSV** in the header exports every entry for every person, with `amount_cents`
 as the authoritative column and a signed `amount_usd` for spreadsheets.
 **Download database backup** at the bottom of the home page gives you the whole
@@ -160,13 +160,19 @@ Maybe Finance), transactions you mark as owed there show up here already filled
 in, waiting for one tap. You do not type the amount, the date, or the
 description twice.
 
+It needs **Sure v0.6.9 or newer**: v0.6.8 added the whole-cent amounts this
+reads, and v0.6.9 added split transactions. On an older Sure the inbox does not
+sit there looking empty -- it says how many transactions it could not use and
+names the version that fixes it.
+
 ### In Sure, once
 
 1. Create a category called **Owed to me**.
 2. Create a rule: *when the category is Owed to me*, **Exclude from budgeting
    and reports**. Money someone owes you is not your spending. Rules run when
    Sure syncs your accounts, so the exclusion lands at the next sync rather than
-   the moment you categorize.
+   the moment you categorize. For transactions that were already categorized,
+   apply the rule once from Sure's Rules page.
 3. Create an API key with the **read** scope.
 
 ### In Sure, per transaction
@@ -184,13 +190,16 @@ goes in the part's name there and in the notes everywhere else. Both are read.
 
 ### Here
 
-Set `SURE_URL` and `SURE_API_KEY`. **From Sure** appears in the header with a
-count. Each item shows who it matched and how, with the amount and description
+Set `SURE_URL` and `SURE_API_KEY`. `SURE_URL` can be Sure's public address,
+even behind Cloudflare: API calls pass through, and if something in front of
+Sure ever answers with a challenge or login page instead of JSON, the inbox says
+exactly that rather than blaming the key. **From Sure** appears in the header
+with a count. Each item shows who it matched and how, with the amount and description
 ready to edit, and **Add to tab** posts it. Add a share rather than the whole
 amount by typing it before you add.
 
 People are matched by their full name as whole words, accents ignored, so
-`Josué Núñez` in a Sure note finds `Josue Nunez` here. A first name alone is
+`Zoë Brontë` in a Sure note finds `Zoe Bronte` here. A first name alone is
 offered as a guess only when nobody else shares it, and is never added
 automatically.
 
@@ -226,7 +235,25 @@ And some things it will not do:
 **Do not also tap Record payment** for a repayment that comes through Sure, or it
 counts twice.
 
-## Health, backups, and integrations
+### Already tracking some of this by hand?
+
+**Leave your existing entries alone.** Categorize the matching transactions in
+Sure so they leave your budget, and when their copies reach the inbox, dismiss
+them. Deleting entries here and re-adding them from Sure would:
+
+- lose anything older than `SURE_LOOKBACK_DAYS` (60 by default) for good, since
+  the sync never reads that far back;
+- replace your descriptions with merchant names, and any share you typed with
+  the full amount unless you type it again;
+- make entries vanish from and reappear on your friends' share pages;
+- count a repayment twice if you had already recorded it by hand.
+
+The inbox cannot tell that an item is already on a tab from a manual entry, so
+spotting those copies is yours to do. A dismissed item never comes back, so only
+dismiss what really is a duplicate. Cash, and anything that never went through
+an account Sure syncs, stays manual -- Sure has no transaction for it.
+
+## Health check and JSON summary
 
 `GET /healthz` reads the database file and returns `{"status":"ok","database":"ok"}`,
 or `503` if it cannot. The container healthcheck uses it. It needs no session and
@@ -244,16 +271,6 @@ whenever the app has to create a brand-new database it says so in the log:
 
 If you see that on an instance that already had data, stop it before adding
 anything — the real database is still sitting on the host, unmounted.
-
-Backups are automatic. One is written to `/data/backups` at every start, so
-every upgrade snapshots before the new code touches anything, then once a day.
-The startup snapshot is taken after opening the database and **before** any
-migration runs, and is named `…-pre-upgrade.db`. Retention is by day: each day
-keeps its newest backup, the newest `BACKUP_KEEP` days are kept, and the three
-newest files are kept regardless, so restarting a dozen times in an afternoon
-cannot push out last week's backups. They go through SQLite's backup API, so they
-are consistent even mid-write. *Download database backup* on the home page
-still gives you one on demand.
 
 Set `API_TOKEN` and `GET /api/summary.json` returns totals and per-person
 balances as JSON:
@@ -318,8 +335,23 @@ session at once — the thing to use for a lost phone.
 ## Behind a reverse proxy
 
 The container speaks plain HTTP on 3000 and trusts `X-Forwarded-Proto` to decide
-whether to mark the session cookie `Secure`. That header picks the transport
-flag only — no proxy header is ever used to decide who the user is.
+whether to mark the session cookie `Secure`. No proxy header is ever used to
+decide who the user is.
+
+The client address, though, comes from `X-Forwarded-For`, and it keys the login
+throttle. Set `TRUST_PROXY` to the number of proxies in front of the app:
+
+| In front of the container | `TRUST_PROXY` |
+| --- | --- |
+| One reverse proxy, or a Cloudflare Tunnel straight to it | `1` (default) |
+| Cloudflare, then Nginx Proxy Manager, Caddy, Traefik or similar | `2` |
+| Nothing | `false` |
+
+Too low, and every login appears to come from your proxy, so a stranger's wrong
+guesses lock you out. Never use `true`: it trusts the left-most entry, which the
+client writes itself. To check it, log in once with a wrong password -- the log
+line `failed login from …` should show your own public address, not
+Cloudflare's or a `172.x` Docker address.
 
 Forward the original `Host`, or set `PUBLIC_BASE_URL`, so share links come out
 with the right address. Example for nginx:
@@ -334,9 +366,17 @@ location / {
 
 ## Backups
 
-The quickest backup is **Download database backup** on the home page: it goes
-through SQLite's backup API, so it is consistent even mid-write, and it
-contains the share tokens a CSV does not.
+Backups are automatic. One is written to `/data/backups` at every start, so
+every upgrade snapshots before the new code touches anything, then once a day.
+The startup snapshot is taken after opening the database and **before** any
+migration runs, and is named `…-pre-upgrade.db`. Retention is by day: each day
+keeps its newest backup, the newest `BACKUP_KEEP` days are kept, and the three
+newest files are kept regardless, so restarting a dozen times in an afternoon
+cannot push out last week's backups.
+
+For one on demand, **Download database backup** on the home page. Both go
+through SQLite's backup API, so they are consistent even mid-write, and both
+contain the share tokens a CSV does not.
 
 For a copy taken from outside the app, everything is in the volume: `iou.db`
 plus the generated `session_secret`.
@@ -355,27 +395,39 @@ together, or stop the container first.
 npm test
 ```
 
-Covers amount parsing and formatting, balance arithmetic including overpayment,
-the auth gate, session cookie flags, share-page isolation and 404 behaviour,
-token regeneration, HTML escaping, the CSV export, settle-up, entry editing,
-undo, archiving, the manifest and icons, the database download, and login
-throttling. `test/boot.test.js` spawns real servers to check startup.
+- `app.test.js` -- amounts, balance arithmetic, the auth gate, cookie flags,
+  share-page isolation and 404 behaviour, token regeneration, escaping, CSV.
+- `features.test.js` -- settle-up, editing, undo, archiving, autocomplete, the
+  manifest and icons, the database download, login throttling.
+- `ops.test.js` -- the health check, the JSON summary, backups, activity, and
+  moving an entry's date.
+- `review.test.js` -- regressions for the code and security review: spoofed
+  `X-Forwarded-For`, revocable sessions, backup order and retention, settings
+  that would overflow a timer, date ordering and validation.
+- `sure.test.js` -- the Sure inbox against a fake Sure that returns the JSON
+  shapes from Sure's own source, including outages, proxy challenges, split
+  edits, changed shares, pagination and an older Sure.
+- `boot.test.js` -- spawns real servers to check startup.
 
 ## Layout
 
 ```
-src/server.js   routes and middleware
-src/db.js       SQLite schema and queries
-src/auth.js     password check, signed session cookie
+src/server.js   routes, middleware, startup
+src/config.js   environment settings and their validation
+src/db.js       SQLite schema, migrations and queries
+src/auth.js     password check, sessions
 src/money.js    cents parsing and formatting
 src/views.js    HTML
 src/csv.js      export
-public/         stylesheet, the person-page script, and generated icons
-scripts/        password hashing, icon generation
+src/backup.js   automatic backups and retention
+src/sure.js     the Sure review inbox
+public/         stylesheet, the page script, and generated icons
+scripts/        password hashing, icon generation, the screen gallery
 ```
 
-Icons are rendered by `node scripts/make-icons.js` from signed distance fields
-and committed, so a build never has to run it.
+Icons are rendered by `npm run icons` from signed distance fields and committed,
+so a build never has to run it. `npm run demo` writes `demo/iou-screens.html`, a
+gallery of every screen rendered by the real server against example data.
 
 ## License
 

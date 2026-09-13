@@ -24,7 +24,7 @@ process.env.ADMIN_USER = 'admin';
 process.env.ADMIN_PASSWORD_HASH = require('bcryptjs').hashSync('hunter2', 10);
 process.env.SURE_API_KEY = 'test-sure-key';
 process.env.SURE_LOOKBACK_DAYS = '60';
-process.env.TZ = 'America/Denver';
+process.env.TZ = 'America/New_York';
 delete process.env.SURE_URL; // set on config once the fake is listening
 
 const { app } = require('../src/server');
@@ -237,13 +237,13 @@ test('people are matched by full name from a split part name or from notes', () 
     { id: 2, name: 'Tyler Brooks' },
     { id: 3, name: 'Tyler Nguyen' },
     { id: 4, name: 'Aunt Rosalie' },
-    { id: 5, name: 'Josue Nunez' },
+    { id: 5, name: 'Zoe Bronte' },
   ];
   const s = (name, notes) => sure.suggestPerson([name, notes], people);
 
   assert.deepEqual(s('Marcus Webb', ''), { personId: 1, confident: true }, 'a split part named for them');
   assert.deepEqual(s('HOME DEPOT #4410', 'marcus webb, half'), { personId: 1, confident: true }, 'a note');
-  assert.deepEqual(s('Josué Núñez', ''), { personId: 5, confident: true }, 'accents do not matter');
+  assert.deepEqual(s('Zoë Brontë', ''), { personId: 5, confident: true }, 'accents do not matter');
   assert.deepEqual(s('Marcus', ''), { personId: 1, confident: false }, 'a unique first name is only a guess');
   assert.deepEqual(s('Tyler', ''), { personId: null, confident: false }, 'two Tylers: no guess at all');
   assert.deepEqual(s('Rent', ''), { personId: null, confident: false });
@@ -470,7 +470,7 @@ test('a rejected key and a proxy challenge are told apart', async () => {
   reset();
   fake.txns = [txn({ date: daysAgo(1), cents: 100, name: 'Diagnosis' })];
 
-  // Sure itself rejecting the key: JSON 401, like the real finance.saderholm.us returns.
+  // Sure itself rejecting the key: a JSON 401, which is what a real Sure returns.
   const savedKey = config.sureApiKey;
   config.sureApiKey = 'wrong-key';
   try {
