@@ -40,7 +40,7 @@ const FOOD = 'cat-food-0000-4000-8000-000000000002';
 
 /* --------------------------------------------------------------- fake Sure */
 
-const fake = { categories: [], txns: [], mode: null, hits: [] };
+const fake = { categories: [], txns: [], mode: null, hits: [], delayMs: 0 };
 
 function paged(res, key, rows, url) {
   const asked = Number(url.searchParams.get('per_page'));
@@ -58,6 +58,10 @@ function paged(res, key, rows, url) {
 }
 
 const fakeServer = http.createServer((req, res) => {
+  setTimeout(() => handle(req, res), fake.delayMs);
+});
+
+function handle(req, res) {
   const url = new URL(req.url, 'http://fake');
   fake.hits.push({ path: url.pathname, query: url.searchParams, key: req.headers['x-api-key'] });
   const json = (code, body) => {
@@ -83,8 +87,16 @@ const fakeServer = http.createServer((req, res) => {
       .sort((a, b) => b.date.localeCompare(a.date));
     return paged(res, 'transactions', rows, url);
   }
+  // One transaction, as transactions/show.json.jbuilder renders it, or the
+  // JSON 404 that set_transaction returns for an id Sure does not have.
+  const one = url.pathname.match(/^\/api\/v1\/transactions\/([^/]+)$/);
+  if (one) {
+    if (fake.mode === 'show500') return json(500, { error: 'internal_server_error' });
+    const t = fake.txns.find((x) => x.id === decodeURIComponent(one[1]));
+    return t ? json(200, t) : json(404, { error: 'not_found', message: 'Transaction not found' });
+  }
   return json(404, { error: 'not_found' });
-});
+}
 
 let seq = 0;
 const uuid = () => `00000000-0000-4000-8000-${String(++seq).padStart(12, '0')}`;
@@ -167,6 +179,7 @@ function reset() {
   fake.txns = [];
   fake.mode = null;
   fake.hits = [];
+  fake.delayMs = 0;
   config.sureAutoAdd = false;
 }
 
@@ -632,6 +645,198 @@ test('inbox actions need a login and refuse malformed ids', async () => {
   const bad = await req('POST', `/sure/items/${encodeURIComponent("x' OR 1=1 --")}/dismiss`);
   assert.equal(bad.status, 303);
   assert.match(bad.headers.get('location'), /e=sure_unknown/);
+});
+
+/* ------------------------------------------------ second review's fixes */
+
+test('typing an existing name into "someone new" uses that person', async () => {
+  reset();
+  const wren = person('Wren Brooks');
+  const zoe = person('Zoë Brontë');
+  const a = txn({ date: daysAgo(2), cents: 4500, name: 'CONCERT HALL' });
+  const b = txn({ date: daysAgo(2), cents: 1200, name: 'BOOKSHOP' });
+  const c = txn({ date: daysAgo(2), cents: 300, name: 'KIOSK' });
+  fake.txns = [a, b, c];
+  await sure.syncOnce();
+
+  await req('POST', `/sure/items/${a.id}/add`, { body: { person_id: '', new_person: '  wren   BROOKS ' } });
+  await req('POST', `/sure/items/${b.id}/add`, { body: { person_id: '', new_person: 'zoe bronte' } });
+
+  const everyone = db.listPeopleForMatching();
+  assert.equal(everyone.filter((p) => sure.sameName(p.name, 'Wren Brooks')).length, 1, 'no second Wren Brooks');
+  assert.equal(everyone.filter((p) => sure.sameName(p.name, 'Zoe Bronte')).length, 1, 'accents do not make a new person');
+  assert.equal(db.getBalance(wren), 4500, 'the money is on the tab that already existed');
+  assert.equal(db.getBalance(zoe), 1200);
+
+  // A name nobody has still creates someone.
+  await req('POST', `/sure/items/${c.id}/add`, { body: { person_id: '', new_person: 'Quill Ashby' } });
+  assert.ok(db.listPeopleForMatching().some((p) => p.name === 'Quill Ashby'));
+});
+
+test('a one-word name inside a bank description is only a guess', () => {
+  const people = [{ id: 1, name: 'Jordan' }, { id: 2, name: 'Wren Brooks' }];
+  const s = (name, notes) => sure.suggestPerson([name, notes], people);
+
+  assert.deepEqual(s("JORDAN'S FURNITURE #12", ''), { personId: 1, confident: false },
+    'a merchant that happens to contain the name');
+  assert.deepEqual(s('Jordan', ''), { personId: 1, confident: true }, 'a split part named for them');
+  assert.deepEqual(s('HARDWARE STORE', 'jordan owes half'), { personId: 1, confident: true },
+    'notes are typed on purpose');
+  assert.deepEqual(s('PAYMENT TO WREN BROOKS', ''), { personId: 2, confident: true },
+    'a two-word name stays confident anywhere');
+});
+
+test('auto-add leaves a one-word name in a bank description for review', async () => {
+  reset();
+  const jordan = person('Jordan');
+  const furniture = txn({ date: daysAgo(1), cents: 64900, name: "JORDAN'S FURNITURE #12" });
+  const part = txn({ date: daysAgo(1), cents: 2000, name: 'Jordan' });
+  fake.txns = [furniture, part];
+
+  config.sureAutoAdd = true;
+  try {
+    await sure.syncOnce();
+  } finally {
+    config.sureAutoAdd = false;
+  }
+
+  assert.equal(item(furniture.id).status, 'pending', 'waits for a person to look');
+  assert.equal(item(part.id).status, 'added', 'a part named exactly for them is added');
+  assert.equal(db.getBalance(jordan), 2000);
+  assert.match(await page('/sure'), /Best guess: Jordan/);
+});
+
+test('a transaction re-dated before the window is not called gone', async () => {
+  reset();
+  const who = person('Early Ezra');
+  const t = txn({ date: daysAgo(50), cents: 7000, name: 'Early Ezra' });
+  fake.txns = [t];
+  await sure.syncOnce();
+  await req('POST', `/sure/items/${t.id}/add`, { body: { person_id: who } });
+
+  t.date = daysAgo(70); // corrected in Sure to before the 60-day window
+  for (let i = 0; i < 4; i++) await sure.syncOnce();
+
+  assert.equal(item(t.id).gone_at, null, 'still exists in Sure, so not gone');
+  assert.equal(item(t.id).date, daysAgo(70), 'its stored date follows Sure');
+  assert.equal(db.getBalance(who), 7000);
+  assert.doesNotMatch(await page('/sure'), /No longer in Sure/);
+  const asked = fake.hits.filter((h) => h.path === `/api/v1/transactions/${t.id}`).length;
+  assert.equal(asked, 1, 'asked Sure once, then left it alone outside the window');
+});
+
+test('a transaction moved to another category is confirmed gone', async () => {
+  reset();
+  const who = person('Moved Mona');
+  const t = txn({ date: daysAgo(5), cents: 2500, name: 'Moved Mona' });
+  fake.txns = [t];
+  await sure.syncOnce();
+  await req('POST', `/sure/items/${t.id}/add`, { body: { person_id: who } });
+
+  t.category = { id: FOOD, name: 'Food', color: '#000', icon: 'x' };
+  await sure.syncOnce();
+  await sure.syncOnce();
+  assert.ok(item(t.id).gone_at, 'no longer owed, so flagged');
+});
+
+test('a failed check of one transaction never flags it', async () => {
+  reset();
+  const who = person('Unsure Uma');
+  const t = txn({ date: daysAgo(5), cents: 2500, name: 'Unsure Uma' });
+  fake.txns = [t];
+  await sure.syncOnce();
+  await req('POST', `/sure/items/${t.id}/add`, { body: { person_id: who } });
+
+  fake.txns = [];
+  fake.mode = 'show500';
+  for (let i = 0; i < 3; i++) await sure.syncOnce();
+  assert.equal(item(t.id).gone_at, null, 'an error from Sure is not evidence');
+  fake.mode = null;
+});
+
+test('removing a gone item can be undone straight away', async () => {
+  reset();
+  const who = person('Undo Uri');
+  const t = txn({ date: daysAgo(3), cents: 5500, name: 'Undo Uri' });
+  fake.txns = [t];
+  await sure.syncOnce();
+  await req('POST', `/sure/items/${t.id}/add`, { body: { person_id: who } });
+  fake.txns = [];
+  await sure.syncOnce();
+  await sure.syncOnce();
+
+  const removed = await req('POST', `/sure/items/${t.id}/remove`);
+  assert.match(removed.headers.get('location'), new RegExp(`undo=${t.id}`));
+  assert.equal(db.getBalance(who), 0);
+
+  const html = await page(removed.headers.get('location'));
+  assert.match(html, new RegExp(`/sure/items/${t.id}/undo-remove`), 'the notice offers Undo');
+
+  await req('POST', `/sure/items/${t.id}/undo-remove`);
+  assert.equal(db.getBalance(who), 5500, 'back on the tab');
+  assert.equal(item(t.id).status, 'added');
+  assert.match(await page('/sure'), /No longer in Sure/, 'and back in the list to decide again');
+});
+
+test('undo does not reopen an item that was kept', async () => {
+  reset();
+  const who = person('Kept Kai');
+  const t = txn({ date: daysAgo(3), cents: 900, name: 'Kept Kai' });
+  fake.txns = [t];
+  await sure.syncOnce();
+  await req('POST', `/sure/items/${t.id}/add`, { body: { person_id: who } });
+  fake.txns = [];
+  await sure.syncOnce();
+  await sure.syncOnce();
+  await req('POST', `/sure/items/${t.id}/keep-gone`);
+
+  const res = await req('POST', `/sure/items/${t.id}/undo-remove`);
+  assert.match(res.headers.get('location'), /e=sure_unknown/);
+  assert.equal(item(t.id).status, 'detached');
+  assert.equal(db.getBalance(who), 900);
+});
+
+test('a kept share follows Sure when the direction changes', async () => {
+  reset();
+  const who = person('Flip Fern');
+  const t = txn({ date: daysAgo(4), cents: 9000, name: 'Group dinner' });
+  fake.txns = [t];
+  await sure.syncOnce();
+  await req('POST', `/sure/items/${t.id}/add`, { body: { person_id: who, amount: '30' } });
+  assert.equal(db.getBalance(who), 3000);
+
+  // Reclassified in Sure: it was money received, not spent.
+  fake.txns = [{ ...t, classification: 'income', signed_amount_cents: 9000 }];
+  await sure.syncOnce();
+  assert.match(await page('/sure'), /money you received/, 'the card says the direction changed');
+
+  await req('POST', `/sure/items/${t.id}/accept`);
+  assert.equal(db.getBalance(who), -3000, 'the share keeps its size and takes the new direction');
+});
+
+test('"Check Sure now" during a background read reports that read', async () => {
+  reset();
+  const t = txn({ date: daysAgo(1), cents: 800, name: 'Mid Read' });
+  fake.txns = [t];
+  fake.delayMs = 150;
+
+  const background = sure.syncOnce();
+  const tapped = await req('POST', '/sure/sync');
+  await background;
+
+  assert.match(tapped.headers.get('location'), /m=sure_synced/);
+  assert.ok(item(t.id), 'what that read found is there when the page reloads');
+  assert.equal(fake.hits.filter((h) => h.path === '/api/v1/categories').length, 1,
+    'one read, shared, not two');
+
+  fake.mode = '500';
+  const failing = sure.syncOnce();
+  const tappedAgain = await req('POST', '/sure/sync');
+  await failing;
+  assert.match(tappedAgain.headers.get('location'), /e=sure_sync_failed/,
+    'a failing read in progress is reported as a failure, not as checked');
+  fake.mode = null;
+  fake.delayMs = 0;
 });
 
 test('a failed login logs the client address, never the username', async () => {

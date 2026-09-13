@@ -49,6 +49,7 @@ const NOTICES = {
   sure_updated: "Updated to match Sure.",
   sure_kept: 'Kept as it is on the tab.',
   sure_removed: 'Removed from the tab.',
+  sure_restored: 'Put back on the tab.',
   sure_detached: 'Kept on the tab, no longer tracked in Sure.',
   sure_synced: 'Checked Sure.',
 };
@@ -700,6 +701,7 @@ app.get('/sure', sureOnly, (req, res) => {
     autoAdd: config.sureAutoAdd,
     notice: notice(req),
     error: errorMsg(req),
+    undoSureId: sure.SURE_ID.test(String(req.query.undo || '')) ? String(req.query.undo) : null,
   }));
 });
 
@@ -720,7 +722,10 @@ const sureAction = (action, done) => (req, res) => {
   // which a one-button form such as "Use Sure's" does not. Reading a field off
   // it would throw and turn the tap into a 500.
   const outcome = action(id, req.body || {});
-  res.redirect(303, outcome.ok ? `/sure?m=${done}` : `/sure?e=${outcome.code}`);
+  if (!outcome.ok) return res.redirect(303, `/sure?e=${outcome.code}`);
+  // An action that can be taken back says so, and the inbox offers it at once.
+  const undo = outcome.undo && sure.SURE_ID.test(outcome.undo) ? `&undo=${outcome.undo}` : '';
+  res.redirect(303, `/sure?m=${done}${undo}`);
 };
 
 app.post('/sure/items/:sureId/add', sureOnly, sureAction((id, body) => sure.addItem(id, {
@@ -737,6 +742,7 @@ app.post('/sure/items/:sureId/accept', sureOnly, sureAction((id, body) => sure.a
 app.post('/sure/items/:sureId/keep', sureOnly, sureAction((id) => sure.keepTabValue(id), 'sure_kept'));
 app.post('/sure/items/:sureId/remove', sureOnly, sureAction((id) => sure.removeGone(id), 'sure_removed'));
 app.post('/sure/items/:sureId/keep-gone', sureOnly, sureAction((id) => sure.keepGone(id), 'sure_detached'));
+app.post('/sure/items/:sureId/undo-remove', sureOnly, sureAction((id) => sure.undoRemove(id), 'sure_restored'));
 
 /** For a lost phone or a browser you no longer control. */
 app.post('/logout-all', (req, res) => {

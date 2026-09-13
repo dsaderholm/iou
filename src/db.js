@@ -411,9 +411,13 @@ function listPeopleForMatching() {
  * back" can never mean "the request failed" or "that page was never fetched".
  *
  * Something is only counted missing if it falls inside the window that was
- * asked for, and only acted on after two reads in a row: paging through a list
- * that is changing underneath can skip a row once, and a skipped row must not
- * look like a deleted one.
+ * asked for, and only becomes a candidate after two reads in a row: paging
+ * through a list that is changing underneath can skip a row once, and a skipped
+ * row must not look like a deleted one.
+ *
+ * Nothing is removed or flagged here. Candidates are returned for the caller to
+ * confirm with Sure one by one, because absence from a windowed list cannot
+ * distinguish "deleted" from "its date moved outside the window".
  *
  * @param {object[]} items       normalised transactions from this read
  * @param {string}   windowStart YYYY-MM-DD, the earliest date requested
@@ -421,7 +425,8 @@ function listPeopleForMatching() {
  */
 function applySureSync({ items, windowStart, suggest }) {
   const run = db.transaction(() => {
-    const counts = { new: 0, updated: 0, returned: 0, gonePending: 0, goneAdded: 0 };
+    const counts = { new: 0, updated: 0, returned: 0 };
+    const candidates = [];
     const find = db.prepare('SELECT * FROM sure_items WHERE sure_id = ?');
     const insert = db.prepare(`
       INSERT INTO sure_items
@@ -471,24 +476,56 @@ function applySureSync({ items, windowStart, suggest }) {
     for (const row of open) {
       if (seen.has(row.sure_id)) continue;
       const missed = row.missed_polls + 1;
-      if (missed < 2) {
-        db.prepare('UPDATE sure_items SET missed_polls = ? WHERE sure_id = ?').run(missed, row.sure_id);
-      } else if (row.status === 'pending') {
-        // Never posted, so nothing to undo: it simply leaves the inbox. This is
-        // what happens to the old parts when a split is edited in Sure.
-        db.prepare('DELETE FROM sure_items WHERE sure_id = ?').run(row.sure_id);
-        counts.gonePending += 1;
-      } else {
-        db.prepare(`
-          UPDATE sure_items SET missed_polls = ?, gone_at = COALESCE(gone_at, datetime('now'))
-          WHERE sure_id = ?
-        `).run(missed, row.sure_id);
-        if (!row.gone_at) counts.goneAdded += 1;
-      }
+      db.prepare('UPDATE sure_items SET missed_polls = ? WHERE sure_id = ?').run(missed, row.sure_id);
+      if (missed >= 2 && !row.gone_at) candidates.push({ sure_id: row.sure_id, status: row.status });
     }
-    return counts;
+    return { ...counts, candidates };
   });
   return run();
+}
+
+/**
+ * Sure confirmed a transaction is gone, or no longer in the category.
+ * A pending item was never posted, so it simply leaves the inbox -- this is what
+ * happens to the old parts when a split is edited. An added one is flagged.
+ *
+ * @returns {'deleted'|'flagged'|null}
+ */
+function confirmSureGone(sureId) {
+  const row = db.prepare('SELECT status, gone_at FROM sure_items WHERE sure_id = ?').get(sureId);
+  if (!row) return null;
+  if (row.status === 'pending') {
+    db.prepare('DELETE FROM sure_items WHERE sure_id = ?').run(sureId);
+    return 'deleted';
+  }
+  if (row.status === 'added' && !row.gone_at) {
+    db.prepare("UPDATE sure_items SET gone_at = datetime('now') WHERE sure_id = ?").run(sureId);
+    return 'flagged';
+  }
+  return null;
+}
+
+/**
+ * Sure confirmed a transaction still exists and is still owed; it had only left
+ * the windowed list, usually because its date moved earlier. Its stored date is
+ * brought up to date, which also takes it out of later missing-counts once it
+ * is older than the window.
+ *
+ * @param {object|null} item  the normalised transaction, or null if Sure's copy
+ *                            could not be read; the miss count resets either way
+ */
+function confirmSurePresent(sureId, item) {
+  if (!item) {
+    db.prepare('UPDATE sure_items SET missed_polls = 0 WHERE sure_id = ?').run(sureId);
+    return;
+  }
+  db.prepare(`
+    UPDATE sure_items
+    SET date = ?, amount_cents = ?, name = ?, notes = ?, merchant = ?, account = ?,
+        fingerprint = ?, missed_polls = 0, gone_at = NULL, last_seen_at = datetime('now')
+    WHERE sure_id = ?
+  `).run(item.date, item.amount, item.name, item.notes, item.merchant, item.account,
+    `${item.amount}|${item.date}`, sureId);
 }
 
 function getSureItem(sureId) {
@@ -608,6 +645,8 @@ module.exports = {
   allEntriesForExport,
   listPeopleForMatching,
   applySureSync,
+  confirmSureGone,
+  confirmSurePresent,
   getSureItem,
   setSureItem,
   listSurePending,

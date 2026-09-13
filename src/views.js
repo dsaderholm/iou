@@ -272,7 +272,7 @@ ${rows}`;
  * The review inbox. Every string that came from Sure -- names, notes, merchants,
  * account names, error text -- is escaped like any other untrusted input.
  */
-function surePage({ pending, changed, gone, people, status, category, autoAdd, notice, error }) {
+function surePage({ pending, changed, gone, people, status, category, autoAdd, notice, error, undoSureId }) {
   const activePeople = people.filter((p) => !p.archived_at);
   const archivedPeople = people.filter((p) => p.archived_at);
   const personOptions = (selectedId) => [
@@ -289,7 +289,7 @@ function surePage({ pending, changed, gone, people, status, category, autoAdd, n
 
   const matchNote = (item) => {
     if (item.suggested_person_id && item.suggestion_confident) return `Matched ${esc(item.suggested_name)} by full name.`;
-    if (item.suggested_person_id) return `Best guess from a first name: ${esc(item.suggested_name)}. Check before adding.`;
+    if (item.suggested_person_id) return `Best guess: ${esc(item.suggested_name)}. Check before adding.`;
     return 'No name matched. Pick who owes it, or add them.';
   };
 
@@ -339,6 +339,11 @@ function surePage({ pending, changed, gone, people, status, category, autoAdd, n
     const share = onTab !== oldTotal;
     const proportional = share && oldTotal > 0 ? Math.round((onTab * newTotal) / oldTotal) : newTotal;
 
+    const flipped = Math.sign(item.amount_cents) !== Math.sign(item.entry_amount);
+    const direction = flipped
+      ? `<p><strong>Sure now records this as money you ${item.amount_cents < 0 ? 'received' : 'spent'}.</strong></p>`
+      : '';
+
     const explain = share
       ? `<p>Their share on the tab is <strong>${esc(formatCents(onTab))}</strong> of what was
            ${esc(formatCents(oldTotal))}. Sure's total is now <strong>${esc(formatCents(newTotal))}</strong>
@@ -363,6 +368,7 @@ function surePage({ pending, changed, gone, people, status, category, autoAdd, n
 <article class="card sure-item sure-flag">
   <p class="sure-what"><a href="/p/${item.person_id}">${esc(item.person_name)}</a> &middot; ${esc(item.entry_description || 'Entry')}</p>
   ${explain}
+  ${direction}
   ${accept}
   <div class="row sure-actions">
     <form method="post" action="/sure/items/${esc(item.sure_id)}/keep" class="inline-form">
@@ -417,7 +423,11 @@ function surePage({ pending, changed, gone, people, status, category, autoAdd, n
 
   const body = `
 <p class="back"><a href="/">&larr; All people</a></p>
-${flash('notice', notice)}
+${flash('notice', notice, undoSureId
+    ? ` <form method="post" action="/sure/items/${esc(undoSureId)}/undo-remove" class="inline-form">
+        <button class="linkish" type="submit">Undo</button>
+      </form>`
+    : '')}
 ${flash('error', error)}
 ${failure}
 ${skippedNote}

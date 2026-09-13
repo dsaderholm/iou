@@ -35,7 +35,13 @@ const status = {
   running: false,
 };
 
-class SureError extends Error {}
+class SureError extends Error {
+  constructor(message, { status = null, json = false } = {}) {
+    super(message);
+    this.status = status;
+    this.json = json;
+  }
+}
 
 /* ---------------------------------------------------------------- transport */
 
@@ -77,7 +83,7 @@ async function request(path, params) {
     throw new SureError(`Sure refused the API key (HTTP ${res.status}). `
       + 'Check SURE_API_KEY, and that the key has not been revoked.');
   }
-  if (!res.ok) throw new SureError(`Sure returned HTTP ${res.status} for ${path}`);
+  if (!res.ok) throw new SureError(`Sure returned HTTP ${res.status} for ${path}`, { status: res.status, json: true });
 
   try {
     return await res.json();
@@ -185,28 +191,46 @@ function containsRun(hay, needle) {
  * Who a transaction is probably about, from its name (where a split part's
  * person goes) and its notes (where a whole transaction's person goes).
  *
- * Confident means exactly one person's full name appears as whole words. A
- * first name alone is offered as a guess only when nobody else shares it, and
- * is never confident enough to add on its own.
+ * Confident means the evidence could only have been put there on purpose:
+ *   - a field that is exactly their name ("Jordan" as a split part's name),
+ *   - their name anywhere in the notes, which you type yourself, or
+ *   - a name of two or more words anywhere at all.
+ *
+ * A one-word name inside a longer `name` is only a guess. For a whole
+ * transaction that field is the bank's description, and descriptions are full
+ * of words that are also names: "JORDAN'S FURNITURE #12" is not about Jordan.
+ * A guess is preselected for review but never added on its own.
+ *
+ * @param {string[]} fields  [name, notes]
  */
 function suggestPerson(fields, people) {
-  const texts = fields.map(words).filter((w) => w.length);
-  if (!texts.length) return { personId: null, confident: false };
+  const nameWords = words(fields[0]);
+  const notesWords = words(fields[1]);
+  if (!nameWords.length && !notesWords.length) return { personId: null, confident: false };
 
-  const full = people
-    .map((p) => ({ id: p.id, name: words(p.name) }))
-    .filter((p) => p.name.length && texts.some((t) => containsRun(t, p.name)));
+  const same = (a, b) => a.length === b.length && a.every((w, i) => w === b[i]);
+  const matches = [];
+  for (const p of people) {
+    const n = words(p.name);
+    if (!n.length) continue;
+    const wholeField = same(nameWords, n) || same(notesWords, n);
+    const inNotes = containsRun(notesWords, n);
+    const inName = containsRun(nameWords, n);
+    if (!wholeField && !inNotes && !inName) continue;
+    matches.push({ id: p.id, length: n.length, strong: wholeField || inNotes || n.length >= 2 });
+  }
 
-  if (full.length) {
+  if (matches.length) {
     // "Marcus" and "Marcus Webb" both match "Marcus Webb": the longer name is
     // the more specific claim. A tie between equally long names is ambiguous.
-    const longest = Math.max(...full.map((p) => p.name.length));
-    const best = full.filter((p) => p.name.length === longest);
+    const longest = Math.max(...matches.map((m) => m.length));
+    const best = matches.filter((m) => m.length === longest);
     return best.length === 1
-      ? { personId: best[0].id, confident: true }
+      ? { personId: best[0].id, confident: best[0].strong }
       : { personId: null, confident: false };
   }
 
+  const texts = [nameWords, notesWords].filter((w) => w.length);
   const byFirst = new Map();
   for (const p of people) {
     const first = words(p.name)[0];
@@ -220,6 +244,13 @@ function suggestPerson(fields, people) {
   return hits.size === 1
     ? { personId: [...hits][0], confident: false }
     : { personId: null, confident: false };
+}
+
+/** Names compared the way matching compares them: case, accents and punctuation ignored. */
+function sameName(a, b) {
+  const x = words(a);
+  const y = words(b);
+  return x.length > 0 && x.length === y.length && x.every((w, i) => w === y[i]);
 }
 
 /** A sensible description to pre-fill: the merchant, else Sure's name. */
@@ -245,15 +276,25 @@ async function findCategoryIds() {
   return ids;
 }
 
-/**
- * Read Sure once and fold the result in. Safe to call at any time; overlapping
- * calls are refused rather than run twice.
- */
-async function syncOnce() {
-  if (!config.sureEnabled) return { skipped: 'not configured' };
-  if (status.running) return { skipped: 'already running' };
-  status.running = true;
+/** The read in progress, shared by everyone who asks while it runs. */
+let inFlight = null;
 
+/**
+ * Read Sure once and fold the result in.
+ *
+ * A second caller while a read is running gets that same read's outcome, not a
+ * refusal: "Check Sure now" tapped during a background read then reports what
+ * the read actually found, instead of claiming a check that never happened.
+ */
+function syncOnce() {
+  if (!config.sureEnabled) return Promise.resolve({ skipped: 'not configured' });
+  if (inFlight) return inFlight;
+  inFlight = runSync().finally(() => { inFlight = null; });
+  return inFlight;
+}
+
+async function runSync() {
+  status.running = true;
   try {
     const categoryIds = await findCategoryIds();
     const windowStart = localDate(Date.now() - config.sureLookbackDays * 86400000);
@@ -274,11 +315,13 @@ async function syncOnce() {
     }
 
     const people = db.listPeopleForMatching();
-    const counts = db.applySureSync({
+    const { candidates, ...counts } = db.applySureSync({
       items: [...items.values()],
       windowStart,
       suggest: (it) => suggestPerson([it.name, it.notes], people),
     });
+
+    Object.assign(counts, await confirmMissing(candidates, categoryIds));
 
     let autoAdded = 0;
     if (config.sureAutoAdd) {
@@ -307,6 +350,52 @@ async function syncOnce() {
   } finally {
     status.running = false;
   }
+}
+
+/**
+ * Ask Sure about each transaction that has been missing from two reads in a
+ * row, before treating it as gone.
+ *
+ * Absence from the list is not evidence of deletion. The list only covers the
+ * lookback window, so a transaction whose date was moved earlier in Sure simply
+ * stops being listed while still existing -- and treating that as gone offered
+ * to take real money off a tab. Only Sure saying the transaction does not
+ * exist, or that it has left the category, counts.
+ *
+ * A failure here never flags anything: the counter stays, and the next read
+ * asks again.
+ */
+async function confirmMissing(candidates, categoryIds) {
+  const counts = { gonePending: 0, goneAdded: 0, stillThere: 0 };
+  for (const { sure_id: id } of candidates) {
+    let body;
+    try {
+      body = await request(`/api/v1/transactions/${encodeURIComponent(id)}`, []);
+    } catch (err) {
+      if (err instanceof SureError && err.status === 404 && err.json) {
+        const outcome = db.confirmSureGone(id);
+        if (outcome === 'deleted') counts.gonePending += 1;
+        if (outcome === 'flagged') counts.goneAdded += 1;
+        continue;
+      }
+      console.warn(`[iou] could not confirm whether Sure transaction ${id} still exists: ${err.message}`);
+      break;
+    }
+
+    const stillOwed = body && body.category && categoryIds.includes(String(body.category.id));
+    if (!stillOwed) {
+      const outcome = db.confirmSureGone(id);
+      if (outcome === 'deleted') counts.gonePending += 1;
+      if (outcome === 'flagged') counts.goneAdded += 1;
+      continue;
+    }
+
+    const n = normalize(body);
+    // Still in the category but unreadable: not enough to call it gone.
+    db.confirmSurePresent(id, n.skip ? null : n);
+    counts.stillThere += 1;
+  }
+  return counts;
 }
 
 /* ------------------------------------------------------------------ actions */
@@ -340,7 +429,13 @@ function addItem(sureId, { personId, newPersonName, amount, description } = {}) 
     let person = null;
     const newName = String(newPersonName || '').replace(/\s+/g, ' ').trim().slice(0, 80);
     if (newName) {
-      person = db.getPerson(db.createPerson(newName));
+      // "Or someone new" is where a name gets typed when the suggestion missed,
+      // so the name is often someone already here. Creating a second person of
+      // the same name would put the money on a tab nobody's link shows, and
+      // leave every later match for that name ambiguous.
+      const everyone = db.listPeopleForMatching().filter((p) => sameName(p.name, newName));
+      const existing = everyone.find((p) => !p.archived_at) || everyone[0];
+      person = existing ? db.getPerson(existing.id) : db.getPerson(db.createPerson(newName));
     } else if (personId) {
       person = db.getPerson(Number(personId));
     }
@@ -361,7 +456,6 @@ function dismissItem(sureId) {
   return { ok: true };
 }
 
-/** Sure changed an added item: take Sure's amount and date onto the tab. */
 /** The amount Sure reported, from a stored "amount|date" fingerprint. */
 function fingerprintAmount(fp) {
   return Number(String(fp || '').split('|')[0]);
@@ -395,7 +489,9 @@ function acceptChange(sureId, { amount } = {}) {
     } else if (entry.amount === fingerprintAmount(item.added_fingerprint)) {
       cents = item.amount_cents; // the whole thing was added, so the whole thing follows Sure
     } else {
-      cents = entry.amount; // a share: never replaced by a total
+      // A share: its size is kept, never replaced by a total. Its direction
+      // follows Sure, which may have reclassified the money as spent or received.
+      cents = Math.sign(item.amount_cents) * Math.abs(entry.amount);
     }
 
     db.updateEntry(entry.person_id, entry.id, cents, entry.description, createdAtFor(item.date));
@@ -412,7 +508,10 @@ function keepTabValue(sureId) {
   return { ok: true };
 }
 
-/** Gone from Sure: take it off the tab. A soft delete, so Undo still works. */
+/**
+ * Gone from Sure: take it off the tab. The entry is soft-deleted and the
+ * result carries an undo, which the inbox offers straight away.
+ */
 function removeGone(sureId) {
   return db.transaction(() => {
     const item = SURE_ID.test(String(sureId)) && db.getSureItem(sureId);
@@ -422,7 +521,22 @@ function removeGone(sureId) {
     const entry = db.handle.prepare('SELECT * FROM entries WHERE id = ?').get(item.entry_id);
     if (entry) db.softDeleteEntry(entry.person_id, entry.id);
     db.setSureItem(sureId, { status: 'detached' });
-    return { ok: true, personId: entry && entry.person_id, entryId: entry && entry.id };
+    return { ok: true, personId: entry && entry.person_id, entryId: entry && entry.id, undo: sureId };
+  });
+}
+
+/** Undo a Remove: put the entry back and show the item as gone again. */
+function undoRemove(sureId) {
+  return db.transaction(() => {
+    const item = SURE_ID.test(String(sureId)) && db.getSureItem(sureId);
+    if (!item || item.status !== 'detached' || !item.entry_id) return { ok: false, code: 'sure_unknown' };
+    const entry = db.handle.prepare('SELECT * FROM entries WHERE id = ?').get(item.entry_id);
+    // Only a removal is undone. "Keep it" also detaches, but leaves the entry in
+    // place, and must not be turned back into an open flag.
+    if (!entry || !entry.deleted_at) return { ok: false, code: 'sure_unknown' };
+    db.restoreEntry(entry.person_id, entry.id);
+    db.setSureItem(sureId, { status: 'added' });
+    return { ok: true, personId: entry.person_id };
   });
 }
 
@@ -462,8 +576,10 @@ module.exports = {
   acceptChange,
   keepTabValue,
   removeGone,
+  undoRemove,
   keepGone,
   // exported for tests
+  sameName,
   fingerprintAmount,
   normalize,
   suggestPerson,

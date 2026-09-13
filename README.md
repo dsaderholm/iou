@@ -196,12 +196,16 @@ Sure ever answers with a challenge or login page instead of JSON, the inbox says
 exactly that rather than blaming the key. **From Sure** appears in the header
 with a count. Each item shows who it matched and how, with the amount and description
 ready to edit, and **Add to tab** posts it. Add a share rather than the whole
-amount by typing it before you add.
+amount by typing it before you add. Typing a name into *or someone new* that
+already belongs to someone here adds it to their tab rather than creating a
+second person of the same name.
 
-People are matched by their full name as whole words, accents ignored, so
-`Zoë Brontë` in a Sure note finds `Zoe Bronte` here. A first name alone is
-offered as a guess only when nobody else shares it, and is never added
-automatically.
+People are matched by name as whole words, accents ignored, so `Zoë Brontë` in a
+Sure note finds `Zoe Bronte` here. A match counts as certain when a split part
+is named exactly for them, when their name is in the notes, or when a name of
+two or more words appears anywhere. Everything else is a guess -- a first name,
+or a one-word name inside a bank description such as `JORDAN'S FURNITURE` --
+which is preselected for you to check and never added automatically.
 
 ### Why it asks before adding
 
@@ -213,8 +217,9 @@ both land in *Owed to me* -- on a page your friends can see. So nothing reaches
 a balance until you add it, and the inbox handles what comes after:
 
 - **A split edited in Sure:** parts you had not added drop out of the inbox. A
-  part you had added is flagged *No longer in Sure*, with Remove or Keep; the new
-  parts arrive as new items.
+  part you had added is flagged *No longer in Sure*, with Remove or Keep, and
+  Remove can be undone from the notice that follows. The new parts arrive as new
+  items.
 - **A transaction changed in Sure after you added it:** flagged, never rewritten.
   If you had added a share, the card says so, suggests the same share of the new
   total, and the date follows Sure either way. A share is never replaced by the
@@ -228,8 +233,11 @@ And some things it will not do:
   anything is compared -- an outage, an expired key or a Cloudflare challenge
   never looks like everything was deleted. A renamed category is an error, not
   an empty list.
-- Call something gone after a single missing read, or for anything older than
-  the lookback window.
+- Call something gone just because it stopped appearing. After two reads
+  without it, Sure is asked about that transaction directly, and it is only gone
+  if Sure says it no longer exists or is no longer in the category. One whose
+  date was moved earlier than the lookback window is still there, and is left
+  alone.
 - Write to Sure, or follow a redirect with your key attached.
 
 **Do not also tap Record payment** for a repayment that comes through Sure, or it
