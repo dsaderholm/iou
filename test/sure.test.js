@@ -539,6 +539,24 @@ test('items older than the window are left alone, never called gone', async () =
   assert.equal(item('old-item-0000').gone_at, null, 'outside the window, absence means nothing');
 });
 
+test('a Sure too old to send amount_cents is named, not shown as an empty inbox', async () => {
+  reset();
+  // What Sure before v0.6.8 renders: no amount_cents or signed_amount_cents.
+  fake.txns = [1, 2, 3].map((n) => {
+    const t = txn({ date: daysAgo(n), cents: 1000 * n, name: `Old Sure ${n}` });
+    delete t.amount_cents;
+    delete t.signed_amount_cents;
+    return t;
+  });
+  const r = await sure.syncOnce();
+  assert.equal(r.error, undefined, 'the read itself succeeded');
+  assert.equal(db.listSurePending().length, 0);
+
+  const html = await page('/sure');
+  assert.match(html, /3 transactions in Owed to me could not be used/);
+  assert.match(html, /v0\.6\.8/, 'and it says which Sure version fixes it');
+});
+
 test('only US dollars are imported', async () => {
   reset();
   const eur = txn({ date: daysAgo(1), cents: 5000, name: 'Paris', currency: 'EUR' });
@@ -546,6 +564,10 @@ test('only US dollars are imported', async () => {
   const r = await sure.syncOnce();
   assert.equal(item(eur.id), undefined);
   assert.equal(r.skipped['currency EUR'], 1);
+
+  const html = await page('/sure');
+  assert.match(html, /1 transaction in Owed to me could not be used \(1 currency EUR\)/);
+  assert.doesNotMatch(html, /v0\.6\.8/, 'a currency skip is not blamed on the Sure version');
 });
 
 test('text from Sure is escaped on the page', async () => {

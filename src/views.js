@@ -392,6 +392,25 @@ function surePage({ pending, changed, gone, people, status, category, autoAdd, n
   const checked = status.lastSuccessAt
     ? `Last checked ${esc(DATE_FMT.format(status.lastSuccessAt))}.`
     : 'Not checked yet since the app started.';
+  // Transactions that came back but could not be used. Without this, a Sure too
+  // old to send amount_cents shows an empty inbox and a cheerful "Last checked"
+  // -- indistinguishable from having nothing owed.
+  let skippedNote = '';
+  const counts = status.lastCounts;
+  const skippedTotal = counts && counts.skipped
+    ? Object.values(counts.skipped).reduce((sum, n) => sum + n, 0)
+    : 0;
+  if (skippedTotal > 0) {
+    const reasons = Object.entries(counts.skipped).map(([why, n]) => `${n} ${esc(why)}`).join(', ');
+    const tooOld = counts.seen === 0 && counts.skipped['zero or unreadable amount'] === counts.fetched;
+    skippedNote = `<div class="flash ${tooOld ? 'flash-error' : 'flash-notice'}" role="status"><span>`
+      + `${skippedTotal} transaction${skippedTotal === 1 ? '' : 's'} in ${esc(category)} could not be used (${reasons}).`
+      + (tooOld
+        ? ' None of them carried a whole-cent amount, which Sure added to its API in v0.6.8. Update Sure, then check again.'
+        : '')
+      + '</span></div>';
+  }
+
   const failure = status.lastError
     ? `<div class="flash flash-error" role="alert"><span>Sure sync failed: ${esc(status.lastError)}</span></div>`
     : '';
@@ -401,6 +420,7 @@ function surePage({ pending, changed, gone, people, status, category, autoAdd, n
 ${flash('notice', notice)}
 ${flash('error', error)}
 ${failure}
+${skippedNote}
 <section class="headline">
   <h1>From Sure</h1>
   <p class="headline-sub">Transactions in <em>${esc(category)}</em>.

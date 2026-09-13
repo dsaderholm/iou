@@ -291,7 +291,13 @@ async function syncOnce() {
 
     status.lastSuccessAt = new Date();
     status.lastError = null;
-    status.lastCounts = { ...counts, autoAdded, skipped, seen: items.size };
+    status.lastCounts = { ...counts, autoAdded, skipped, seen: items.size, fetched: raw.length };
+    if (raw.length > 0 && items.size === 0) {
+      // A successful read in which nothing was usable looks, from the inbox,
+      // exactly like having nothing to review. Say so where it will be seen.
+      console.warn(`[iou] Sure returned ${raw.length} transaction(s) but none were usable: `
+        + Object.entries(skipped).map(([why, n]) => `${n} ${why}`).join(', '));
+    }
     return status.lastCounts;
   } catch (err) {
     status.lastError = err instanceof SureError ? err.message : `unexpected error: ${err.message}`;
